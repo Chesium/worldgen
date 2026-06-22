@@ -64,7 +64,7 @@ def _build_opening_layout(room_ids: set[int], config: Config, seed: int):
     adjacency = build_adjacency_graph(partition)
     selection = RoomSelection(partition=partition, room_cell_ids=frozenset(room_ids))
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(seed))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(seed))
     applied = apply_connections(selected, adjacency)
     opening_layout = generate_openings(applied, config, create_seeded_rng(seed + 1000))
     return partition, opening_layout
@@ -115,7 +115,7 @@ def test_same_seed_produces_identical_openings() -> None:
     adjacency = build_adjacency_graph(partition)
     selection = RoomSelection(partition=partition, room_cell_ids=frozenset({0, 1, 3}))
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(7))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(7))
     applied = apply_connections(selected, adjacency)
 
     first = generate_openings(applied, config, create_seeded_rng(500))
@@ -132,7 +132,7 @@ def test_generated_world_openings_validate() -> None:
         room_cell_ids=frozenset(cell.id for cell in partition.cells[: config.min_room_count]),
     )
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(99))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(99))
     applied = apply_connections(selected, adjacency)
     opening_layout = generate_openings(applied, config, create_seeded_rng(1001))
     validate_openings(opening_layout, config)

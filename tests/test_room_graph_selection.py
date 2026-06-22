@@ -66,8 +66,10 @@ def _build_grid_selection_and_candidates(
 
 def test_selected_room_graph_is_connected() -> None:
     config = _sample_config(extra_loop_probability=0.0)
-    _, _, _, candidates = _build_grid_selection_and_candidates({0, 1, 2, 3}, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(42))
+    _, _, adjacency, candidates = _build_grid_selection_and_candidates(
+        {0, 1, 2, 3}, config
+    )
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(42))
     validate_selected_room_graph(selected, config)
 
     graph = nx.Graph()
@@ -79,8 +81,10 @@ def test_selected_room_graph_is_connected() -> None:
 
 def test_zero_loop_probability_keeps_spanning_tree_only() -> None:
     config = _sample_config(extra_loop_probability=0.0)
-    _, _, _, candidates = _build_grid_selection_and_candidates({0, 1, 2, 3}, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(7))
+    _, _, adjacency, candidates = _build_grid_selection_and_candidates(
+        {0, 1, 2, 3}, config
+    )
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(7))
 
     assert len(selected.connections) == selected.room_selection.room_count - 1
     assert selected.loop_connections == ()
@@ -88,8 +92,10 @@ def test_zero_loop_probability_keeps_spanning_tree_only() -> None:
 
 def test_full_loop_probability_adds_all_remaining_candidates() -> None:
     config = _sample_config(extra_loop_probability=1.0)
-    _, _, _, candidates = _build_grid_selection_and_candidates({0, 1, 2, 3}, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(7))
+    _, _, adjacency, candidates = _build_grid_selection_and_candidates(
+        {0, 1, 2, 3}, config
+    )
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(7))
 
     assert len(selected.connections) == len(candidates.connections)
     assert len(selected.loop_connections) == (
@@ -99,9 +105,11 @@ def test_full_loop_probability_adds_all_remaining_candidates() -> None:
 
 def test_same_seed_produces_identical_selected_room_graph() -> None:
     config = _sample_config(extra_loop_probability=0.35)
-    _, _, _, candidates = _build_grid_selection_and_candidates({0, 1, 2, 3}, config)
-    first = select_room_graph(candidates, config, create_seeded_rng(123))
-    second = select_room_graph(candidates, config, create_seeded_rng(123))
+    _, _, adjacency, candidates = _build_grid_selection_and_candidates(
+        {0, 1, 2, 3}, config
+    )
+    first = select_room_graph(candidates, adjacency, config, create_seeded_rng(123))
+    second = select_room_graph(candidates, adjacency, config, create_seeded_rng(123))
     assert first == second
 
 
@@ -114,14 +122,16 @@ def test_generated_world_selected_room_graph_validates() -> None:
         room_cell_ids=frozenset(cell.id for cell in partition.cells[: config.min_room_count]),
     )
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(99))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(99))
     validate_selected_room_graph(selected, config)
 
 
 def test_render_selected_room_graph_writes_svg_and_png(tmp_path: Path) -> None:
     config = _sample_config(extra_loop_probability=0.5)
-    partition, _, _, candidates = _build_grid_selection_and_candidates({0, 1, 2, 3}, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(42))
+    partition, _, adjacency, candidates = _build_grid_selection_and_candidates(
+        {0, 1, 2, 3}, config
+    )
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(42))
     output_base = tmp_path / "05_selected_room_graph"
     render_selected_room_graph(partition, selected, output_base)
 

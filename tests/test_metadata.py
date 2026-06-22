@@ -65,7 +65,7 @@ def _build_pipeline(room_ids: set[int], config: Config, seed: int):
     adjacency = build_adjacency_graph(partition)
     selection = RoomSelection(partition=partition, room_cell_ids=frozenset(room_ids))
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(seed))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(seed))
     applied = apply_connections(selected, adjacency)
     opening_layout = generate_openings(applied, config, create_seeded_rng(seed + 1000))
     wall_layout = generate_walls(opening_layout, adjacency, config)
@@ -113,7 +113,7 @@ def test_generated_world_metadata_exports(tmp_path: Path) -> None:
         room_cell_ids=frozenset(cell.id for cell in partition.cells[: config.min_room_count]),
     )
     candidates = generate_candidate_connections(selection, adjacency, config)
-    selected = select_room_graph(candidates, config, create_seeded_rng(99))
+    selected = select_room_graph(candidates, adjacency, config, create_seeded_rng(99))
     applied = apply_connections(selected, adjacency)
     opening_layout = generate_openings(applied, config, create_seeded_rng(1001))
     wall_layout = generate_walls(opening_layout, adjacency, config)

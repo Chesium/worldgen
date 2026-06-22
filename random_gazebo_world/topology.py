@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -274,6 +275,7 @@ def validate_candidate_connections(
 
 def select_room_graph(
     candidates: CandidateConnections,
+    adjacency: AdjacencyGraph,
     config: Config,
     rng: random.Random,
 ) -> SelectedRoomGraph:
@@ -288,7 +290,34 @@ def select_room_graph(
         validate_selected_room_graph(selected, config)
         return selected
 
-    spanning_tree = _randomized_spanning_tree(candidates.connections, room_ids, rng)
+    room_selection = candidates.room_selection
+    cell_edge_counts: dict[int, dict[str, int]] = {}
+
+    def commit(connection: CandidateConnection) -> CandidateConnection | None:
+        if connection.connection_type == ConnectionType.GATE:
+            return connection
+        path = _route_passage(
+            connection.room_a_id,
+            connection.room_b_id,
+            adjacency,
+            room_selection,
+            cell_edge_counts,
+            config,
+            rng,
+        )
+        if path is None:
+            return None
+        _commit_path_edges(path, adjacency, cell_edge_counts)
+        return CandidateConnection(
+            room_a_id=connection.room_a_id,
+            room_b_id=connection.room_b_id,
+            connection_type=ConnectionType.PASSAGE,
+            path_cell_ids=path,
+        )
+
+    spanning_tree = _constrained_spanning_tree(
+        candidates.connections, room_ids, rng, commit
+    )
     selected = list(spanning_tree)
     selected_pairs = {
         (connection.room_a_id, connection.room_b_id) for connection in spanning_tree
@@ -299,7 +328,10 @@ def select_room_graph(
         if pair in selected_pairs:
             continue
         if rng.random() < config.extra_loop_probability:
-            selected.append(connection)
+            committed = commit(connection)
+            if committed is None:
+                continue
+            selected.append(committed)
             selected_pairs.add(pair)
 
     selected.sort(key=lambda connection: (connection.room_a_id, connection.room_b_id))
@@ -503,10 +535,11 @@ def _opening_edge(cell: Cell, shared_wall: SharedWall) -> str | None:
     return None
 
 
-def _randomized_spanning_tree(
+def _constrained_spanning_tree(
     connections: tuple[CandidateConnection, ...],
     room_ids: list[int],
     rng: random.Random,
+    commit: Callable[[CandidateConnection], CandidateConnection | None],
 ) -> tuple[CandidateConnection, ...]:
     if not connections:
         raise RoomGraphSelectionError("No candidate connections available")
@@ -532,8 +565,13 @@ def _randomized_spanning_tree(
 
     spanning: list[CandidateConnection] = []
     for connection in shuffled:
-        if union(connection.room_a_id, connection.room_b_id):
-            spanning.append(connection)
+        if find(connection.room_a_id) == find(connection.room_b_id):
+            continue
+        committed = commit(connection)
+        if committed is None:
+            continue
+        union(connection.room_a_id, connection.room_b_id)
+        spanning.append(committed)
         if len(spanning) == len(room_ids) - 1:
             break
 
@@ -551,6 +589,8 @@ def _shortest_path_through_unused(
     room_b_id: int,
     adjacency: AdjacencyGraph,
     room_selection: RoomSelection,
+    blocked: frozenset[int] = frozenset(),
+    rng: random.Random | None = None,
 ) -> tuple[int, ...] | None:
     queue: deque[tuple[int, list[int]]] = deque([(room_a_id, [room_a_id])])
     visited = {room_a_id}
@@ -560,15 +600,105 @@ def _shortest_path_through_unused(
         if current_id == room_b_id:
             return tuple(path)
 
-        for neighbor_id in adjacency.graph.neighbors(current_id):
+        neighbors = list(adjacency.graph.neighbors(current_id))
+        if rng is not None:
+            rng.shuffle(neighbors)
+
+        for neighbor_id in neighbors:
             if neighbor_id in visited:
                 continue
             if neighbor_id == room_b_id:
                 pass
             elif room_selection.role_for(neighbor_id) != CellRole.UNUSED:
                 continue
+            elif neighbor_id in blocked:
+                continue
 
             visited.add(neighbor_id)
             queue.append((neighbor_id, path + [neighbor_id]))
 
     return None
+
+
+def _path_cell_edges(
+    path: tuple[int, ...],
+    adjacency: AdjacencyGraph,
+) -> dict[int, tuple[str, str]]:
+    """Map each interior (transit) cell of a path to its (entry_edge, exit_edge)."""
+    cell_edges: dict[int, tuple[str, str]] = {}
+    for index in range(1, len(path) - 1):
+        prev_id = path[index - 1]
+        cell_id = path[index]
+        next_id = path[index + 1]
+        cell = adjacency.cell_by_id(cell_id)
+        entry_wall = adjacency.graph[prev_id][cell_id]["shared_wall"]
+        exit_wall = adjacency.graph[cell_id][next_id]["shared_wall"]
+        entry_edge = _opening_edge(cell, entry_wall)
+        exit_edge = _opening_edge(cell, exit_wall)
+        if entry_edge is None or exit_edge is None:
+            raise AppliedLayoutError(
+                f"Passage transit cell {cell_id} has an opening off its edges"
+            )
+        cell_edges[cell_id] = (entry_edge, exit_edge)
+    return cell_edges
+
+
+def _path_within_limits(
+    path: tuple[int, ...],
+    adjacency: AdjacencyGraph,
+    cell_edge_counts: dict[int, dict[str, int]],
+    config: Config,
+) -> int | None:
+    """Return the first transit cell id that would violate limits, else None."""
+    cell_edges = _path_cell_edges(path, adjacency)
+    for cell_id, (entry_edge, exit_edge) in cell_edges.items():
+        counts = dict(cell_edge_counts.get(cell_id, {}))
+        counts[entry_edge] = counts.get(entry_edge, 0) + 1
+        counts[exit_edge] = counts.get(exit_edge, 0) + 1
+        if any(count > config.max_openings_per_passage_edge for count in counts.values()):
+            return cell_id
+        if len(counts) > config.max_open_edges_per_passage:
+            return cell_id
+    return None
+
+
+def _route_passage(
+    room_a_id: int,
+    room_b_id: int,
+    adjacency: AdjacencyGraph,
+    room_selection: RoomSelection,
+    cell_edge_counts: dict[int, dict[str, int]],
+    config: Config,
+    rng: random.Random,
+    max_reroutes: int = 8,
+) -> tuple[int, ...] | None:
+    """Find a passage path whose transit cells respect the configured limits."""
+    blocked: set[int] = set()
+    for _ in range(max_reroutes):
+        path = _shortest_path_through_unused(
+            room_a_id,
+            room_b_id,
+            adjacency,
+            room_selection,
+            blocked=frozenset(blocked),
+            rng=rng,
+        )
+        if path is None:
+            return None
+        offending = _path_within_limits(path, adjacency, cell_edge_counts, config)
+        if offending is None:
+            return path
+        blocked.add(offending)
+    return None
+
+
+def _commit_path_edges(
+    path: tuple[int, ...],
+    adjacency: AdjacencyGraph,
+    cell_edge_counts: dict[int, dict[str, int]],
+) -> None:
+    cell_edges = _path_cell_edges(path, adjacency)
+    for cell_id, (entry_edge, exit_edge) in cell_edges.items():
+        counts = cell_edge_counts.setdefault(cell_id, {})
+        counts[entry_edge] = counts.get(entry_edge, 0) + 1
+        counts[exit_edge] = counts.get(exit_edge, 0) + 1

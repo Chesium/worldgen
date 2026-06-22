@@ -128,22 +128,30 @@ def generate_valid_world(
     config: Config,
     max_attempts: int | None = None,
 ) -> GeneratedWorld:
-    attempts = max_attempts if max_attempts is not None else config.max_attempts
+    structural_attempts = (
+        max_attempts if max_attempts is not None else config.max_attempts
+    )
+    selection_attempts = config.max_selection_attempts
     last_error: Exception | None = None
 
-    for attempt in range(attempts):
+    for attempt in range(structural_attempts):
         attempt_config = config.with_seed(config.random_seed + attempt)
         rng = create_seeded_rng(attempt_config.random_seed)
         try:
-            world = _generate_world_attempt(attempt_config, rng, attempt)
-            validate_world_connectivity(world)
-            return world
+            structure = _build_structure(attempt_config, rng)
         except RETRYABLE_ERRORS as exc:
             last_error = exc
             continue
 
+        for _ in range(selection_attempts):
+            try:
+                return _attempt_selection(structure, attempt_config, rng, attempt)
+            except RETRYABLE_ERRORS as exc:
+                last_error = exc
+                continue
+
     raise WorldGenerationError(
-        f"Failed to generate a valid world after {attempts} attempts"
+        f"Failed to generate a valid world after {structural_attempts} attempts"
     ) from last_error
 
 
@@ -199,27 +207,57 @@ def validate_world_connectivity(world: GeneratedWorld) -> None:
     if len(room_ids) <= 1:
         return
 
+    _validate_candidate_connectivity(world.room_selection, world.candidates)
+    validate_selected_room_graph(world.selected_graph, world.config)
+
+
+def _validate_candidate_connectivity(
+    room_selection: RoomSelection,
+    candidates: CandidateConnections,
+) -> None:
+    room_ids = sorted(room_selection.room_cell_ids)
+    if len(room_ids) <= 1:
+        return
+
     candidate_graph = nx.Graph()
     candidate_graph.add_nodes_from(room_ids)
-    for connection in world.candidates.connections:
+    for connection in candidates.connections:
         candidate_graph.add_edge(connection.room_a_id, connection.room_b_id)
 
     if not nx.is_connected(candidate_graph):
         raise WorldValidationError("Selected rooms cannot be connected via candidates")
 
-    validate_selected_room_graph(world.selected_graph, world.config)
+
+@dataclass(frozen=True)
+class _Structure:
+    partition: Partition
+    adjacency: AdjacencyGraph
+    room_selection: RoomSelection
+    candidates: CandidateConnections
 
 
-def _generate_world_attempt(
-    config: Config,
-    rng: random.Random,
-    attempt: int,
-) -> GeneratedWorld:
+def _build_structure(config: Config, rng: random.Random) -> _Structure:
     partition = generate_partition(config, rng)
     adjacency = build_adjacency_graph(partition)
     room_selection = select_rooms(partition, config, rng)
     candidates = generate_candidate_connections(room_selection, adjacency, config)
-    selected_graph = select_room_graph(candidates, config, rng)
+    _validate_candidate_connectivity(room_selection, candidates)
+    return _Structure(
+        partition=partition,
+        adjacency=adjacency,
+        room_selection=room_selection,
+        candidates=candidates,
+    )
+
+
+def _attempt_selection(
+    structure: _Structure,
+    config: Config,
+    rng: random.Random,
+    attempt: int,
+) -> GeneratedWorld:
+    adjacency = structure.adjacency
+    selected_graph = select_room_graph(structure.candidates, adjacency, config, rng)
     applied_layout = apply_connections(selected_graph, adjacency)
     validate_passage_constraints(applied_layout, config)
     opening_layout = generate_openings(applied_layout, config, rng)
@@ -230,12 +268,12 @@ def _generate_world_attempt(
         applied_layout, opening_layout, wall_layout, passage_geometry
     )
 
-    return GeneratedWorld(
+    world = GeneratedWorld(
         config=config,
-        partition=partition,
+        partition=structure.partition,
         adjacency=adjacency,
-        room_selection=room_selection,
-        candidates=candidates,
+        room_selection=structure.room_selection,
+        candidates=structure.candidates,
         selected_graph=selected_graph,
         applied_layout=applied_layout,
         opening_layout=opening_layout,
@@ -245,6 +283,8 @@ def _generate_world_attempt(
         layout_document=layout_document,
         attempt=attempt,
     )
+    validate_world_connectivity(world)
+    return world
 
 
 def _validate_output_tree(out_dir: Path) -> None:
