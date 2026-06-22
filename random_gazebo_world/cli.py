@@ -8,6 +8,7 @@ from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config, load_config
 from random_gazebo_world.partition import generate_partition
 from random_gazebo_world.rng import create_seeded_rng
+from random_gazebo_world.export_map import export_occupancy_map
 from random_gazebo_world.openings import generate_openings
 from random_gazebo_world.walls import generate_walls
 from random_gazebo_world.topology import (
@@ -88,6 +89,7 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     render_passage_cells(applied_layout, debug_dir / "06_passage_cells")
     render_openings(opening_layout, debug_dir / "07_openings")
     render_wall_segments(wall_layout, debug_dir / "08_wall_segments")
+    export_occupancy_map(wall_layout, config, out_dir, rng)
     return rng
 
 

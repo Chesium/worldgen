@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib",
     "networkx",
     "numpy",
+    "pillow",
     "pyyaml",
     "pytest",
     "shapely",
