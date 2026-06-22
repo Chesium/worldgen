@@ -8,7 +8,12 @@ from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config, load_config
 from random_gazebo_world.partition import generate_partition
 from random_gazebo_world.rng import create_seeded_rng
-from random_gazebo_world.visualize import render_adjacency_graph, render_partition
+from random_gazebo_world.topology import select_rooms
+from random_gazebo_world.visualize import (
+    render_adjacency_graph,
+    render_partition,
+    render_selected_rooms,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,7 +53,9 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     rng = create_seeded_rng(config.random_seed)
     partition = generate_partition(config, rng)
     adjacency = build_adjacency_graph(partition)
+    room_selection = select_rooms(partition, config, rng)
     render_partition(partition, debug_dir / "01_partition")
+    render_selected_rooms(partition, room_selection, debug_dir / "02_selected_rooms")
     render_adjacency_graph(partition, adjacency, debug_dir / "03_cell_adjacency_graph")
     return rng
 

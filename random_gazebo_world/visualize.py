@@ -8,6 +8,7 @@ from matplotlib.patches import Rectangle
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.geometry import SharedWall
 from random_gazebo_world.partition import Partition
+from random_gazebo_world.topology import RoomSelection
 
 
 def _setup_axes(
@@ -140,6 +141,64 @@ def render_adjacency_graph(
             linestyle="--",
             alpha=0.7,
             zorder=2,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def render_selected_rooms(
+    partition: Partition,
+    selection: RoomSelection,
+    output_base: Path,
+    title: str = "Selected Rooms",
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    for cell in selection.unused_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#d9d9d9",
+                edgecolor="#666666",
+                linewidth=1.0,
+                alpha=0.9,
+            )
+        )
+        ax.text(
+            cell.x_min + cell.width / 2.0,
+            cell.y_min + cell.height / 2.0,
+            f"{cell.id}\nunused",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="#444444",
+        )
+
+    for cell in selection.room_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#7bd389",
+                edgecolor="#1f7a3a",
+                linewidth=1.5,
+                alpha=0.9,
+            )
+        )
+        ax.text(
+            cell.x_min + cell.width / 2.0,
+            cell.y_min + cell.height / 2.0,
+            f"{cell.id}\nroom",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#12351f",
+            weight="bold",
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
