@@ -7,6 +7,7 @@ from matplotlib.patches import Rectangle
 
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.geometry import SharedWall
+from random_gazebo_world.openings import OpeningLayout, opening_line
 from random_gazebo_world.partition import Partition
 from random_gazebo_world.topology import (
     AppliedLayout,
@@ -452,6 +453,67 @@ def render_passage_cells(
             fontsize=8,
             color=text_color,
             weight=weight,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def render_openings(
+    opening_layout: OpeningLayout,
+    output_base: Path,
+    title: str = "Openings",
+) -> None:
+    layout = opening_layout.applied_layout
+    partition = layout.partition
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    for cell in partition.cells:
+        role = layout.role_for(cell.id)
+        if role.value == "room":
+            facecolor = "#7bd389"
+            edgecolor = "#1f7a3a"
+        elif role.value == "passage":
+            facecolor = "#8ecae6"
+            edgecolor = "#219ebc"
+        else:
+            facecolor = "#d9d9d9"
+            edgecolor = "#666666"
+
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor=facecolor,
+                edgecolor=edgecolor,
+                linewidth=1.0,
+                alpha=0.85,
+            )
+        )
+
+    for logical_opening in layout.logical_openings:
+        start, end = _shared_wall_line(logical_opening.shared_wall)
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color="#bbbbbb",
+            linewidth=2.0,
+            solid_capstyle="butt",
+            zorder=2,
+        )
+
+    for opening in opening_layout.openings:
+        start, end = opening_line(opening)
+        color = "#d4a017" if opening.kind == "gate" else "#7b2cbf"
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color=color,
+            linewidth=5.0,
+            solid_capstyle="round",
+            zorder=4,
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
