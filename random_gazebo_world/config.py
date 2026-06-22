@@ -33,6 +33,11 @@ class Config:
     max_attempts: int = 100000
     max_selection_attempts: int = 64
     ground_thickness: float = 0.1
+    partition_method: str = "bsp"
+    voronoi_seed_count: int = 16
+    voronoi_lloyd_iterations: int = 8
+    voronoi_min_cell_area: float = 1.0
+    voronoi_max_cell_area: float = 64.0
 
     def validate(self) -> None:
         _require_positive(self.world_width, "world_width")
@@ -61,11 +66,31 @@ class Config:
         _require_positive_int(
             self.max_open_edges_per_passage, "max_open_edges_per_passage"
         )
-        if not 2 <= self.max_open_edges_per_passage <= 4:
+        if self.partition_method not in ("bsp", "voronoi"):
             raise ConfigError(
-                "max_open_edges_per_passage must be between 2 and 4, got "
+                "partition_method must be 'bsp' or 'voronoi', got "
+                f"{self.partition_method!r}"
+            )
+        if self.partition_method == "bsp":
+            if not 2 <= self.max_open_edges_per_passage <= 4:
+                raise ConfigError(
+                    "max_open_edges_per_passage must be between 2 and 4 for bsp, got "
+                    f"{self.max_open_edges_per_passage}"
+                )
+        elif self.max_open_edges_per_passage < 2:
+            raise ConfigError(
+                "max_open_edges_per_passage must be at least 2, got "
                 f"{self.max_open_edges_per_passage}"
             )
+        _require_positive_int(self.voronoi_seed_count, "voronoi_seed_count")
+        _require_non_negative_int(
+            self.voronoi_lloyd_iterations, "voronoi_lloyd_iterations"
+        )
+        _require_positive(self.voronoi_min_cell_area, "voronoi_min_cell_area")
+        _require_positive(self.voronoi_max_cell_area, "voronoi_max_cell_area")
+        _require_min_max(
+            self.voronoi_min_cell_area, self.voronoi_max_cell_area, "voronoi cell area"
+        )
         _require_positive_int(self.max_attempts, "max_attempts")
         _require_positive_int(
             self.max_selection_attempts, "max_selection_attempts"
@@ -111,6 +136,11 @@ def load_config(path: Path | str) -> Config:
             max_attempts=raw.get("max_attempts", 100000),
             max_selection_attempts=raw.get("max_selection_attempts", 64),
             ground_thickness=raw.get("ground_thickness", 0.1),
+            partition_method=raw.get("partition_method", "bsp"),
+            voronoi_seed_count=raw.get("voronoi_seed_count", 16),
+            voronoi_lloyd_iterations=raw.get("voronoi_lloyd_iterations", 8),
+            voronoi_min_cell_area=raw.get("voronoi_min_cell_area", 1.0),
+            voronoi_max_cell_area=raw.get("voronoi_max_cell_area", 64.0),
         )
     except KeyError as exc:
         raise ConfigError(f"Missing required config field: {exc.args[0]}") from exc
@@ -137,6 +167,13 @@ def _require_positive_int(value: int, name: str) -> None:
         raise ConfigError(f"{name} must be an integer, got {value!r}")
     if value <= 0:
         raise ConfigError(f"{name} must be positive, got {value}")
+
+
+def _require_non_negative_int(value: int, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"{name} must be an integer, got {value!r}")
+    if value < 0:
+        raise ConfigError(f"{name} must be non-negative, got {value}")
 
 
 def _require_min_max(min_value: float, max_value: float, label: str) -> None:

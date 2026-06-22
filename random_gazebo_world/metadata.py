@@ -5,8 +5,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from shapely.geometry import Polygon
+from shapely.geometry.base import BaseGeometry
+
 from random_gazebo_world.config import Config
-from random_gazebo_world.geometry import Cell, Rect, SharedWall
+from random_gazebo_world.geometry import Cell, SharedWall, Vec2
 from random_gazebo_world.openings import Opening, OpeningLayout
 from random_gazebo_world.partition import Partition
 from random_gazebo_world.passage_geometry import PassageGeometryLayout
@@ -17,6 +20,8 @@ from random_gazebo_world.topology import (
     SelectedRoomGraph,
 )
 from random_gazebo_world.walls import WallLayout, WallSegment
+
+SCHEMA_VERSION = 2
 
 
 class MetadataError(RuntimeError):
@@ -32,9 +37,9 @@ class LayoutDocument:
     connections: tuple[CandidateConnection, ...]
     openings: tuple[Opening, ...]
     wall_segments: tuple[WallSegment, ...]
-    passage_corridors: tuple[Rect, ...] = ()
-    passage_solids: tuple[Rect, ...] = ()
-    unused_solids: tuple[Rect, ...] = ()
+    passage_corridors: tuple[BaseGeometry, ...] = ()
+    passage_solids: tuple[Polygon, ...] = ()
+    unused_solids: tuple[Polygon, ...] = ()
 
 
 def build_layout_document(
@@ -129,6 +134,7 @@ def load_metadata_json(path: Path) -> dict[str, Any]:
 
 def layout_document_to_dict(document: LayoutDocument) -> dict[str, Any]:
     return {
+        "schema_version": SCHEMA_VERSION,
         "world": {
             "width": document.partition.world_width,
             "height": document.partition.world_height,
@@ -140,6 +146,7 @@ def layout_document_to_dict(document: LayoutDocument) -> dict[str, Any]:
                 "y_min": cell.y_min,
                 "x_max": cell.x_max,
                 "y_max": cell.y_max,
+                "vertices": [list(point) for point in cell.polygon_vertices],
                 "role": role,
             }
             for cell, role in zip(document.partition.cells, _roles_by_cell_id(document), strict=True)
@@ -153,9 +160,11 @@ def layout_document_to_dict(document: LayoutDocument) -> dict[str, Any]:
         "wall_segments": [
             wall_segment_to_dict(segment) for segment in document.wall_segments
         ],
-        "passage_corridors": [rect_to_dict(rect) for rect in document.passage_corridors],
-        "passage_solids": [rect_to_dict(rect) for rect in document.passage_solids],
-        "unused_solids": [rect_to_dict(rect) for rect in document.unused_solids],
+        "passage_corridors": [
+            polygon_to_dict(geom) for geom in document.passage_corridors
+        ],
+        "passage_solids": [polygon_to_dict(geom) for geom in document.passage_solids],
+        "unused_solids": [polygon_to_dict(geom) for geom in document.unused_solids],
     }
 
 
@@ -170,13 +179,7 @@ def layout_document_from_dict(payload: dict[str, Any]) -> LayoutDocument:
     for item in cells_payload:
         if not isinstance(item, dict):
             raise MetadataError("Each cell entry must be an object")
-        cell = Cell(
-            id=int(item["id"]),
-            x_min=float(item["x_min"]),
-            y_min=float(item["y_min"]),
-            x_max=float(item["x_max"]),
-            y_max=float(item["y_max"]),
-        )
+        cell = _cell_from_dict(item)
         cells.append(cell)
         cell_roles.append((cell.id, str(item["role"])))
 
@@ -201,15 +204,46 @@ def layout_document_from_dict(payload: dict[str, Any]) -> LayoutDocument:
             wall_segment_from_dict(item) for item in payload.get("wall_segments", [])
         ),
         passage_corridors=tuple(
-            rect_from_dict(item) for item in payload.get("passage_corridors", [])
+            polygon_from_dict(item) for item in payload.get("passage_corridors", [])
         ),
         passage_solids=tuple(
-            rect_from_dict(item) for item in payload.get("passage_solids", [])
+            polygon_from_dict(item) for item in payload.get("passage_solids", [])
         ),
         unused_solids=tuple(
-            rect_from_dict(item) for item in payload.get("unused_solids", [])
+            polygon_from_dict(item) for item in payload.get("unused_solids", [])
         ),
     )
+
+
+def _cell_from_dict(item: dict[str, Any]) -> Cell:
+    cell_id = int(item["id"])
+    raw_vertices = item.get("vertices")
+    if raw_vertices:
+        vertices = tuple((float(x), float(y)) for x, y in raw_vertices)
+        if _is_axis_aligned_rectangle(vertices):
+            return Cell(
+                id=cell_id,
+                x_min=float(item["x_min"]),
+                y_min=float(item["y_min"]),
+                x_max=float(item["x_max"]),
+                y_max=float(item["y_max"]),
+            )
+        return Cell.from_polygon(cell_id, vertices)
+    return Cell(
+        id=cell_id,
+        x_min=float(item["x_min"]),
+        y_min=float(item["y_min"]),
+        x_max=float(item["x_max"]),
+        y_max=float(item["y_max"]),
+    )
+
+
+def _is_axis_aligned_rectangle(vertices: tuple[Vec2, ...]) -> bool:
+    if len(vertices) != 4:
+        return False
+    xs = {round(point[0], 9) for point in vertices}
+    ys = {round(point[1], 9) for point in vertices}
+    return len(xs) == 2 and len(ys) == 2
 
 
 def config_to_dict(config: Config) -> dict[str, Any]:
@@ -275,57 +309,43 @@ def opening_from_dict(payload: dict[str, Any]) -> Opening:
     )
 
 
-def rect_to_dict(rect: Rect) -> dict[str, Any]:
-    return {
-        "x_min": rect.x_min,
-        "y_min": rect.y_min,
-        "x_max": rect.x_max,
-        "y_max": rect.y_max,
-    }
+def polygon_to_dict(geometry: BaseGeometry) -> dict[str, Any]:
+    if geometry.is_empty or geometry.geom_type != "Polygon":
+        return {"vertices": []}
+    coords = list(geometry.exterior.coords)[:-1]
+    return {"vertices": [[float(x), float(y)] for x, y in coords]}
 
 
-def rect_from_dict(payload: dict[str, Any]) -> Rect:
-    return Rect(
-        x_min=float(payload["x_min"]),
-        y_min=float(payload["y_min"]),
-        x_max=float(payload["x_max"]),
-        y_max=float(payload["y_max"]),
-    )
+def polygon_from_dict(payload: dict[str, Any]) -> Polygon:
+    vertices = payload.get("vertices", [])
+    return Polygon([(float(x), float(y)) for x, y in vertices])
 
 
 def wall_segment_to_dict(segment: WallSegment) -> dict[str, Any]:
     return {
-        "orientation": segment.orientation,
-        "fixed_coord": segment.fixed_coord,
-        "span_start": segment.span_start,
-        "span_end": segment.span_end,
+        "p1": list(segment.p1),
+        "p2": list(segment.p2),
     }
 
 
 def wall_segment_from_dict(payload: dict[str, Any]) -> WallSegment:
     return WallSegment(
-        orientation=str(payload["orientation"]),
-        fixed_coord=float(payload["fixed_coord"]),
-        span_start=float(payload["span_start"]),
-        span_end=float(payload["span_end"]),
+        p1=(float(payload["p1"][0]), float(payload["p1"][1])),
+        p2=(float(payload["p2"][0]), float(payload["p2"][1])),
     )
 
 
 def shared_wall_to_dict(shared_wall: SharedWall) -> dict[str, Any]:
     return {
-        "orientation": shared_wall.orientation,
-        "fixed_coord": shared_wall.fixed_coord,
-        "span_start": shared_wall.span_start,
-        "span_end": shared_wall.span_end,
+        "p1": list(shared_wall.p1),
+        "p2": list(shared_wall.p2),
     }
 
 
 def shared_wall_from_dict(payload: dict[str, Any]) -> SharedWall:
     return SharedWall(
-        orientation=str(payload["orientation"]),
-        fixed_coord=float(payload["fixed_coord"]),
-        span_start=float(payload["span_start"]),
-        span_end=float(payload["span_end"]),
+        p1=(float(payload["p1"][0]), float(payload["p1"][1])),
+        p2=(float(payload["p2"][0]), float(payload["p2"][1])),
     )
 
 

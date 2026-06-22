@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Polygon as PolygonPatch
+from shapely.geometry.base import BaseGeometry
 
 from random_gazebo_world.adjacency import AdjacencyGraph
-from random_gazebo_world.geometry import SharedWall
+from random_gazebo_world.geometry import Cell, SharedWall
 from random_gazebo_world.openings import OpeningLayout, opening_line
 from random_gazebo_world.partition import Partition
 from random_gazebo_world.topology import (
@@ -40,53 +41,62 @@ def _save_figure(fig: plt.Figure, output_base: Path) -> None:
     plt.close(fig)
 
 
+def _add_cell_patch(ax: plt.Axes, cell: Cell, **kwargs) -> None:
+    ax.add_patch(PolygonPatch(list(cell.polygon_vertices), closed=True, **kwargs))
+
+
+def _add_shapely_patch(ax: plt.Axes, geometry: BaseGeometry, **kwargs) -> None:
+    for polygon in _iter_polygons(geometry):
+        coords = list(polygon.exterior.coords)[:-1]
+        ax.add_patch(PolygonPatch(coords, closed=True, **kwargs))
+
+
+def _iter_polygons(geometry: BaseGeometry):
+    if geometry.is_empty:
+        return
+    if geometry.geom_type == "Polygon":
+        yield geometry
+    elif geometry.geom_type in {"MultiPolygon", "GeometryCollection"}:
+        for part in geometry.geoms:
+            if part.geom_type == "Polygon" and not part.is_empty:
+                yield part
+
+
+def _centroid(cell: Cell) -> tuple[float, float]:
+    return cell.centroid
+
+
 def render_partition(
     partition: Partition,
     output_base: Path,
-    title: str = "BSP Partition",
+    title: str = "Partition",
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 8))
     colors = plt.get_cmap("tab20")
 
     for index, cell in enumerate(partition.cells):
         color = colors(index % 20)
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=color,
-                edgecolor="black",
-                linewidth=1.0,
-                alpha=0.65,
-            )
+        _add_cell_patch(
+            ax,
+            cell,
+            facecolor=color,
+            edgecolor="black",
+            linewidth=1.0,
+            alpha=0.65,
         )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            str(cell.id),
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="black",
-            weight="bold",
-        )
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, str(cell.id), ha="center", va="center", fontsize=9,
+                color="black", weight="bold")
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
     _save_figure(fig, output_base)
 
 
-def _shared_wall_line(shared_wall: SharedWall) -> tuple[tuple[float, float], tuple[float, float]]:
-    if shared_wall.orientation == "vertical":
-        return (
-            (shared_wall.fixed_coord, shared_wall.span_start),
-            (shared_wall.fixed_coord, shared_wall.span_end),
-        )
-    return (
-        (shared_wall.span_start, shared_wall.fixed_coord),
-        (shared_wall.span_end, shared_wall.fixed_coord),
-    )
+def _shared_wall_line(
+    shared_wall: SharedWall,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    return (shared_wall.p1, shared_wall.p2)
 
 
 def render_adjacency_graph(
@@ -100,56 +110,24 @@ def render_adjacency_graph(
 
     for index, cell in enumerate(partition.cells):
         color = colors(index % 9)
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=color,
-                edgecolor="black",
-                linewidth=0.8,
-                alpha=0.8,
-            )
+        _add_cell_patch(
+            ax, cell, facecolor=color, edgecolor="black", linewidth=0.8, alpha=0.8
         )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            str(cell.id),
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="black",
-            weight="bold",
-        )
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, str(cell.id), ha="center", va="center", fontsize=9,
+                color="black", weight="bold")
 
     for edge in adjacency.edges:
         start, end = _shared_wall_line(edge.shared_wall)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color="crimson",
-            linewidth=3.0,
-            solid_capstyle="round",
-            zorder=3,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color="crimson",
+                linewidth=3.0, solid_capstyle="round", zorder=3)
 
         cell_a = adjacency.cell_by_id(edge.cell_a_id)
         cell_b = adjacency.cell_by_id(edge.cell_b_id)
-        ax.plot(
-            [
-                cell_a.x_min + cell_a.width / 2.0,
-                cell_b.x_min + cell_b.width / 2.0,
-            ],
-            [
-                cell_a.y_min + cell_a.height / 2.0,
-                cell_b.y_min + cell_b.height / 2.0,
-            ],
-            color="navy",
-            linewidth=1.0,
-            linestyle="--",
-            alpha=0.7,
-            zorder=2,
-        )
+        ca = _centroid(cell_a)
+        cb = _centroid(cell_b)
+        ax.plot([ca[0], cb[0]], [ca[1], cb[1]], color="navy", linewidth=1.0,
+                linestyle="--", alpha=0.7, zorder=2)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
@@ -165,60 +143,22 @@ def render_selected_rooms(
     fig, ax = plt.subplots(figsize=(8, 8))
 
     for cell in selection.unused_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#d9d9d9",
-                edgecolor="#666666",
-                linewidth=1.0,
-                alpha=0.9,
-            )
-        )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            f"{cell.id}\nunused",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="#444444",
-        )
+        _add_cell_patch(ax, cell, facecolor="#d9d9d9", edgecolor="#666666",
+                        linewidth=1.0, alpha=0.9)
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, f"{cell.id}\nunused", ha="center", va="center",
+                fontsize=8, color="#444444")
 
     for cell in selection.room_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#7bd389",
-                edgecolor="#1f7a3a",
-                linewidth=1.5,
-                alpha=0.9,
-            )
-        )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            f"{cell.id}\nroom",
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="#12351f",
-            weight="bold",
-        )
+        _add_cell_patch(ax, cell, facecolor="#7bd389", edgecolor="#1f7a3a",
+                        linewidth=1.5, alpha=0.9)
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, f"{cell.id}\nroom", ha="center", va="center",
+                fontsize=9, color="#12351f", weight="bold")
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
     _save_figure(fig, output_base)
-
-
-def _cell_centroid(cell) -> tuple[float, float]:
-    return (
-        cell.x_min + cell.width / 2.0,
-        cell.y_min + cell.height / 2.0,
-    )
 
 
 def render_candidate_connections(
@@ -232,112 +172,45 @@ def render_candidate_connections(
     cells_by_id = {cell.id: cell for cell in partition.cells}
 
     for cell in room_selection.unused_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#d9d9d9",
-                edgecolor="#666666",
-                linewidth=1.0,
-                alpha=0.9,
-            )
-        )
+        _add_cell_patch(ax, cell, facecolor="#d9d9d9", edgecolor="#666666",
+                        linewidth=1.0, alpha=0.9)
 
     for cell in room_selection.room_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#7bd389",
-                edgecolor="#1f7a3a",
-                linewidth=1.5,
-                alpha=0.9,
-            )
-        )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            str(cell.id),
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="#12351f",
-            weight="bold",
-        )
+        _add_cell_patch(ax, cell, facecolor="#7bd389", edgecolor="#1f7a3a",
+                        linewidth=1.5, alpha=0.9)
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, str(cell.id), ha="center", va="center", fontsize=9,
+                color="#12351f", weight="bold")
 
     for connection in candidates.connections:
         if connection.connection_type == ConnectionType.GATE:
             assert connection.shared_wall is not None
             start, end = _shared_wall_line(connection.shared_wall)
-            ax.plot(
-                [start[0], end[0]],
-                [start[1], end[1]],
-                color="#d4a017",
-                linewidth=4.0,
-                solid_capstyle="round",
-                zorder=4,
-            )
+            ax.plot([start[0], end[0]], [start[1], end[1]], color="#d4a017",
+                    linewidth=4.0, solid_capstyle="round", zorder=4)
             continue
 
         path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
-        xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
-        ax.plot(
-            xs,
-            ys,
-            color="#7b2cbf",
-            linewidth=2.5,
-            linestyle="-",
-            marker="o",
-            markersize=5,
-            zorder=4,
-        )
+        xs, ys = zip(*(_centroid(cell) for cell in path_cells))
+        ax.plot(xs, ys, color="#7b2cbf", linewidth=2.5, linestyle="-",
+                marker="o", markersize=5, zorder=4)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
     _save_figure(fig, output_base)
 
 
-def _draw_room_layout_base(
-    ax: plt.Axes,
-    room_selection: RoomSelection,
-) -> None:
+def _draw_room_layout_base(ax: plt.Axes, room_selection: RoomSelection) -> None:
     for cell in room_selection.unused_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#d9d9d9",
-                edgecolor="#666666",
-                linewidth=1.0,
-                alpha=0.9,
-            )
-        )
+        _add_cell_patch(ax, cell, facecolor="#d9d9d9", edgecolor="#666666",
+                        linewidth=1.0, alpha=0.9)
 
     for cell in room_selection.room_cells():
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor="#7bd389",
-                edgecolor="#1f7a3a",
-                linewidth=1.5,
-                alpha=0.9,
-            )
-        )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            str(cell.id),
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="#12351f",
-            weight="bold",
-        )
+        _add_cell_patch(ax, cell, facecolor="#7bd389", edgecolor="#1f7a3a",
+                        linewidth=1.5, alpha=0.9)
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, str(cell.id), ha="center", va="center", fontsize=9,
+                color="#12351f", weight="bold")
 
 
 def _draw_connection(
@@ -353,29 +226,15 @@ def _draw_connection(
     if connection.connection_type == ConnectionType.GATE:
         assert connection.shared_wall is not None
         start, end = _shared_wall_line(connection.shared_wall)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color=color,
-            linewidth=linewidth,
-            linestyle=linestyle,
-            solid_capstyle="round",
-            zorder=4,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=color,
+                linewidth=linewidth, linestyle=linestyle,
+                solid_capstyle="round", zorder=4)
         return
 
     path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
-    xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
-    ax.plot(
-        xs,
-        ys,
-        color=color,
-        linewidth=linewidth,
-        linestyle=linestyle,
-        marker="o",
-        markersize=5,
-        zorder=4,
-    )
+    xs, ys = zip(*(_centroid(cell) for cell in path_cells))
+    ax.plot(xs, ys, color=color, linewidth=linewidth, linestyle=linestyle,
+            marker="o", markersize=5, zorder=4)
 
 
 def render_selected_room_graph(
@@ -405,6 +264,14 @@ def render_selected_room_graph(
     _save_figure(fig, output_base)
 
 
+def _role_style(role_value: str) -> tuple[str, str, str, str]:
+    if role_value == "room":
+        return "#7bd389", "#1f7a3a", "#12351f", "bold"
+    if role_value == "passage":
+        return "#8ecae6", "#219ebc", "#023047", "bold"
+    return "#d9d9d9", "#666666", "#444444", "normal"
+
+
 def render_passage_cells(
     layout: AppliedLayout,
     output_base: Path,
@@ -415,46 +282,12 @@ def render_passage_cells(
 
     for cell in partition.cells:
         role = layout.role_for(cell.id)
-        if role.value == "room":
-            facecolor = "#7bd389"
-            edgecolor = "#1f7a3a"
-            label = f"{cell.id}\nroom"
-            text_color = "#12351f"
-            weight = "bold"
-        elif role.value == "passage":
-            facecolor = "#8ecae6"
-            edgecolor = "#219ebc"
-            label = f"{cell.id}\npassage"
-            text_color = "#023047"
-            weight = "bold"
-        else:
-            facecolor = "#d9d9d9"
-            edgecolor = "#666666"
-            label = f"{cell.id}\nunused"
-            text_color = "#444444"
-            weight = "normal"
-
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=facecolor,
-                edgecolor=edgecolor,
-                linewidth=1.2,
-                alpha=0.9,
-            )
-        )
-        ax.text(
-            cell.x_min + cell.width / 2.0,
-            cell.y_min + cell.height / 2.0,
-            label,
-            ha="center",
-            va="center",
-            fontsize=8,
-            color=text_color,
-            weight=weight,
-        )
+        facecolor, edgecolor, text_color, weight = _role_style(role.value)
+        _add_cell_patch(ax, cell, facecolor=facecolor, edgecolor=edgecolor,
+                        linewidth=1.2, alpha=0.9)
+        cx, cy = _centroid(cell)
+        ax.text(cx, cy, f"{cell.id}\n{role.value}", ha="center", va="center",
+                fontsize=8, color=text_color, weight=weight)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
@@ -472,50 +305,20 @@ def render_openings(
 
     for cell in partition.cells:
         role = layout.role_for(cell.id)
-        if role.value == "room":
-            facecolor = "#7bd389"
-            edgecolor = "#1f7a3a"
-        elif role.value == "passage":
-            facecolor = "#8ecae6"
-            edgecolor = "#219ebc"
-        else:
-            facecolor = "#d9d9d9"
-            edgecolor = "#666666"
-
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=facecolor,
-                edgecolor=edgecolor,
-                linewidth=1.0,
-                alpha=0.85,
-            )
-        )
+        facecolor, edgecolor, _, _ = _role_style(role.value)
+        _add_cell_patch(ax, cell, facecolor=facecolor, edgecolor=edgecolor,
+                        linewidth=1.0, alpha=0.85)
 
     for logical_opening in layout.logical_openings:
         start, end = _shared_wall_line(logical_opening.shared_wall)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color="#bbbbbb",
-            linewidth=2.0,
-            solid_capstyle="butt",
-            zorder=2,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color="#bbbbbb",
+                linewidth=2.0, solid_capstyle="butt", zorder=2)
 
     for opening in opening_layout.openings:
         start, end = opening_line(opening)
         color = "#d4a017" if opening.kind == "gate" else "#7b2cbf"
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color=color,
-            linewidth=5.0,
-            solid_capstyle="round",
-            zorder=4,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=color,
+                linewidth=5.0, solid_capstyle="round", zorder=4)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
@@ -540,72 +343,27 @@ def render_passage_geometry(
             facecolor = "#fbeeee"
         else:
             facecolor = "#f5f5f5"
-
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=facecolor,
-                edgecolor="#cccccc",
-                linewidth=0.5,
-                alpha=0.9,
-            )
-        )
+        _add_cell_patch(ax, cell, facecolor=facecolor, edgecolor="#cccccc",
+                        linewidth=0.5, alpha=0.9)
 
     if passage_geometry is not None:
         for cell_geometry in passage_geometry.cells:
-            for rect in cell_geometry.solids:
-                ax.add_patch(
-                    Rectangle(
-                        (rect.x_min, rect.y_min),
-                        rect.width,
-                        rect.height,
-                        facecolor="#444444",
-                        edgecolor="#222222",
-                        linewidth=0.5,
-                        alpha=0.85,
-                        zorder=3,
-                    )
-                )
-            for rect in cell_geometry.corridor:
-                ax.add_patch(
-                    Rectangle(
-                        (rect.x_min, rect.y_min),
-                        rect.width,
-                        rect.height,
-                        facecolor="#8ecae6",
-                        edgecolor="#219ebc",
-                        linewidth=0.5,
-                        alpha=0.95,
-                        zorder=4,
-                    )
-                )
+            for solid in cell_geometry.solids:
+                _add_shapely_patch(ax, solid, facecolor="#444444",
+                                   edgecolor="#222222", linewidth=0.5,
+                                   alpha=0.85, zorder=3)
+            _add_shapely_patch(ax, cell_geometry.corridor, facecolor="#8ecae6",
+                               edgecolor="#219ebc", linewidth=0.5, alpha=0.95,
+                               zorder=4)
 
-    for rect in wall_layout.unused_solids:
-        ax.add_patch(
-            Rectangle(
-                (rect.x_min, rect.y_min),
-                rect.width,
-                rect.height,
-                facecolor="#666666",
-                edgecolor="#333333",
-                linewidth=0.5,
-                alpha=0.9,
-                zorder=3,
-            )
-        )
+    for solid in wall_layout.unused_solids:
+        _add_shapely_patch(ax, solid, facecolor="#666666", edgecolor="#333333",
+                           linewidth=0.5, alpha=0.9, zorder=3)
 
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color="#111111",
-            linewidth=2.0,
-            solid_capstyle="butt",
-            zorder=5,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color="#111111",
+                linewidth=2.0, solid_capstyle="butt", zorder=5)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
@@ -629,29 +387,13 @@ def render_wall_segments(
             facecolor = "#eef7fb"
         else:
             facecolor = "#f5f5f5"
-
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=facecolor,
-                edgecolor="#cccccc",
-                linewidth=0.5,
-                alpha=0.9,
-            )
-        )
+        _add_cell_patch(ax, cell, facecolor=facecolor, edgecolor="#cccccc",
+                        linewidth=0.5, alpha=0.9)
 
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color="#111111",
-            linewidth=3.0,
-            solid_capstyle="butt",
-            zorder=5,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color="#111111",
+                linewidth=3.0, solid_capstyle="butt", zorder=5)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
@@ -685,95 +427,40 @@ def render_final_floorplan(
             edgecolor = "#aaaaaa"
             label = ""
 
-        ax.add_patch(
-            Rectangle(
-                (cell.x_min, cell.y_min),
-                cell.width,
-                cell.height,
-                facecolor=facecolor,
-                edgecolor=edgecolor,
-                linewidth=1.0,
-                alpha=0.95,
-            )
-        )
+        _add_cell_patch(ax, cell, facecolor=facecolor, edgecolor=edgecolor,
+                        linewidth=1.0, alpha=0.95)
         if label:
-            ax.text(
-                cell.x_min + cell.width / 2.0,
-                cell.y_min + cell.height / 2.0,
-                label,
-                ha="center",
-                va="center",
-                fontsize=9,
-                color="#12351f",
-                weight="bold",
-            )
+            cx, cy = _centroid(cell)
+            ax.text(cx, cy, label, ha="center", va="center", fontsize=9,
+                    color="#12351f", weight="bold")
 
     if passage_geometry is not None:
         for cell_geometry in passage_geometry.cells:
-            for rect in cell_geometry.corridor:
-                ax.add_patch(
-                    Rectangle(
-                        (rect.x_min, rect.y_min),
-                        rect.width,
-                        rect.height,
-                        facecolor="#8ecae6",
-                        edgecolor="none",
-                        alpha=0.95,
-                        zorder=2,
-                    )
-                )
+            _add_shapely_patch(ax, cell_geometry.corridor, facecolor="#8ecae6",
+                               edgecolor="none", alpha=0.95, zorder=2)
 
-    for rect in wall_layout.unused_solids:
-        ax.add_patch(
-            Rectangle(
-                (rect.x_min, rect.y_min),
-                rect.width,
-                rect.height,
-                facecolor="#666666",
-                edgecolor="#333333",
-                linewidth=0.5,
-                alpha=0.95,
-                zorder=2,
-            )
-        )
+    for solid in wall_layout.unused_solids:
+        _add_shapely_patch(ax, solid, facecolor="#666666", edgecolor="#333333",
+                           linewidth=0.5, alpha=0.95, zorder=2)
 
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color="#111111",
-            linewidth=3.0,
-            solid_capstyle="butt",
-            zorder=4,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color="#111111",
+                linewidth=3.0, solid_capstyle="butt", zorder=4)
 
     for opening in opening_layout.openings:
         start, end = opening_line(opening)
         color = "#d4a017" if opening.kind == "gate" else "#7b2cbf"
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color=color,
-            linewidth=4.5,
-            solid_capstyle="round",
-            zorder=5,
-        )
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=color,
+                linewidth=4.5, solid_capstyle="round", zorder=5)
 
     for connection in layout.selected_graph.connections:
         if connection.connection_type != ConnectionType.PASSAGE:
             continue
         path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
-        xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
-        ax.plot(
-            xs,
-            ys,
-            color="#5a189a",
-            linewidth=1.5,
-            linestyle="--",
-            alpha=0.8,
-            zorder=3,
-        )
+        xs, ys = zip(*(_centroid(cell) for cell in path_cells))
+        ax.plot(xs, ys, color="#5a189a", linewidth=1.5, linestyle="--",
+                alpha=0.8, zorder=3)
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()

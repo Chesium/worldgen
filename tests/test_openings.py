@@ -78,8 +78,8 @@ def test_gate_opening_respects_width_range() -> None:
 
     opening = gate_openings[0]
     assert config.gate_width_min <= opening.width <= config.gate_width_max + 1e-9
-    assert opening.span_start >= opening.shared_wall.span_start - 1e-9
-    assert opening.span_end <= opening.shared_wall.span_end + 1e-9
+    assert opening.span_start >= -1e-9
+    assert opening.span_end <= opening.shared_wall.length + 1e-9
     assert opening.span_end - opening.span_start == pytest.approx(opening.width)
 
 
@@ -93,8 +93,8 @@ def test_passage_opening_respects_width_range() -> None:
 
     for opening in passage_openings:
         assert config.passage_width_min <= opening.width <= config.passage_width_max + 1e-9
-        assert opening.span_start >= opening.shared_wall.span_start - 1e-9
-        assert opening.span_end <= opening.shared_wall.span_end + 1e-9
+        assert opening.span_start >= -1e-9
+        assert opening.span_end <= opening.shared_wall.length + 1e-9
 
 
 def test_opening_rejects_wall_shorter_than_minimum_width() -> None:

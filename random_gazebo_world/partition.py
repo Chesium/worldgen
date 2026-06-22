@@ -19,6 +19,14 @@ class Partition:
 
 
 def generate_partition(config: Config, rng: random.Random) -> Partition:
+    if config.partition_method == "voronoi":
+        from random_gazebo_world.voronoi import generate_voronoi_partition
+
+        return generate_voronoi_partition(config, rng)
+    return generate_bsp_partition(config, rng)
+
+
+def generate_bsp_partition(config: Config, rng: random.Random) -> Partition:
     cells: list[Cell] = []
     next_id = 0
 

@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.dom import minidom
 
+from shapely.geometry import Polygon
+
 from random_gazebo_world.config import Config
-from random_gazebo_world.geometry import Rect
 from random_gazebo_world.walls import WallLayout, WallSegment
 
 
@@ -69,6 +70,14 @@ class WallBox:
     size_x: float
     size_y: float
     size_z: float
+    yaw: float = 0.0
+
+
+@dataclass(frozen=True)
+class SolidPolyline:
+    name: str
+    points: tuple[tuple[float, float], ...]
+    height: float
 
 
 def export_world_sdf(
@@ -76,8 +85,9 @@ def export_world_sdf(
     config: Config,
     output_path: Path,
 ) -> Path:
-    boxes = _all_boxes(wall_layout, config)
-    tree = _build_sdf_tree(boxes, config)
+    boxes = _wall_boxes(wall_layout, config)
+    polylines = _solid_polylines(wall_layout, config)
+    tree = _build_sdf_tree(boxes, polylines, config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(tree, output_path)
     validate_world_sdf(output_path, wall_layout, config)
@@ -97,38 +107,40 @@ def ground_box(config: Config) -> WallBox:
     )
 
 
-def _solid_rects(wall_layout: WallLayout) -> tuple[Rect, ...]:
-    rects: list[Rect] = []
+def _solid_polygons(wall_layout: WallLayout) -> tuple[Polygon, ...]:
+    polygons: list[Polygon] = []
     if wall_layout.passage_geometry is not None:
-        rects.extend(wall_layout.passage_geometry.solids)
-    rects.extend(wall_layout.unused_solids)
-    return tuple(rects)
+        polygons.extend(wall_layout.passage_geometry.solids)
+    polygons.extend(wall_layout.unused_solids)
+    return tuple(polygons)
 
 
-def _all_boxes(wall_layout: WallLayout, config: Config) -> list[WallBox]:
-    boxes = [
+def _wall_boxes(wall_layout: WallLayout, config: Config) -> list[WallBox]:
+    return [
         wall_segment_to_box(segment, config.wall_height, config.wall_thickness, index)
         for index, segment in enumerate(wall_layout.segments)
     ]
-    offset = len(boxes)
-    boxes.extend(
-        rect_to_box(rect, config.wall_height, offset + index)
-        for index, rect in enumerate(_solid_rects(wall_layout))
-    )
-    return boxes
 
 
-def rect_to_box(rect: Rect, wall_height: float, index: int) -> WallBox:
-    center_x, center_y = rect.center
-    return WallBox(
-        name=f"wall_{index}",
-        center_x=center_x,
-        center_y=center_y,
-        center_z=wall_height / 2.0,
-        size_x=rect.width,
-        size_y=rect.height,
-        size_z=wall_height,
-    )
+def _solid_polylines(wall_layout: WallLayout, config: Config) -> list[SolidPolyline]:
+    polylines: list[SolidPolyline] = []
+    for index, polygon in enumerate(_solid_polygons(wall_layout)):
+        points = _polygon_points(polygon)
+        if points is None:
+            continue
+        polylines.append(
+            SolidPolyline(name=f"solid_{index}", points=points, height=config.wall_height)
+        )
+    return polylines
+
+
+def _polygon_points(polygon: Polygon) -> tuple[tuple[float, float], ...] | None:
+    if polygon.is_empty:
+        return None
+    coords = list(polygon.exterior.coords)
+    if len(coords) < 4:
+        return None
+    return tuple((float(x), float(y)) for x, y in coords[:-1])
 
 
 def wall_segment_to_box(
@@ -139,8 +151,9 @@ def wall_segment_to_box(
 ) -> WallBox:
     center_z = wall_height / 2.0
     length = segment.length
+    orientation = segment.orientation
 
-    if segment.orientation == "vertical":
+    if orientation == "vertical":
         return WallBox(
             name=f"wall_{index}",
             center_x=segment.fixed_coord,
@@ -151,14 +164,27 @@ def wall_segment_to_box(
             size_z=wall_height,
         )
 
+    if orientation == "horizontal":
+        return WallBox(
+            name=f"wall_{index}",
+            center_x=(segment.span_start + segment.span_end) / 2.0,
+            center_y=segment.fixed_coord,
+            center_z=center_z,
+            size_x=length,
+            size_y=wall_thickness,
+            size_z=wall_height,
+        )
+
+    center_x, center_y = segment.midpoint
     return WallBox(
         name=f"wall_{index}",
-        center_x=(segment.span_start + segment.span_end) / 2.0,
-        center_y=segment.fixed_coord,
+        center_x=center_x,
+        center_y=center_y,
         center_z=center_z,
         size_x=length,
         size_y=wall_thickness,
         size_z=wall_height,
+        yaw=segment.yaw,
     )
 
 
@@ -190,18 +216,43 @@ def validate_world_sdf(
     if link is None:
         raise SdfExportError("Wall model must contain a <link> element")
 
-    collisions = link.findall("collision")
-    visuals = link.findall("visual")
-    expected_boxes = _all_boxes(wall_layout, config)
-    expected = len(expected_boxes)
-    if len(collisions) != expected or len(visuals) != expected:
+    expected_boxes = _wall_boxes(wall_layout, config)
+    expected_polylines = _solid_polylines(wall_layout, config)
+
+    box_collisions = [
+        item for item in link.findall("collision")
+        if item.find("./geometry/box") is not None
+    ]
+    box_visuals = [
+        item for item in link.findall("visual")
+        if item.find("./geometry/box") is not None
+    ]
+    polyline_collisions = [
+        item for item in link.findall("collision")
+        if item.find("./geometry/polyline") is not None
+    ]
+    polyline_visuals = [
+        item for item in link.findall("visual")
+        if item.find("./geometry/polyline") is not None
+    ]
+
+    if len(box_collisions) != len(expected_boxes) or len(box_visuals) != len(
+        expected_boxes
+    ):
         raise SdfExportError(
-            f"Expected {expected} wall collision/visual pairs, got "
-            f"{len(collisions)}/{len(visuals)}"
+            f"Expected {len(expected_boxes)} wall box collision/visual pairs, got "
+            f"{len(box_collisions)}/{len(box_visuals)}"
+        )
+    if len(polyline_collisions) != len(expected_polylines) or len(
+        polyline_visuals
+    ) != len(expected_polylines):
+        raise SdfExportError(
+            f"Expected {len(expected_polylines)} solid polyline collision/visual pairs, "
+            f"got {len(polyline_collisions)}/{len(polyline_visuals)}"
         )
 
     for index, expected_box in enumerate(expected_boxes):
-        collision = collisions[index]
+        collision = box_collisions[index]
         pose = collision.find("pose")
         size = collision.find("./geometry/box/size")
         if pose is None or size is None:
@@ -262,7 +313,11 @@ def _validate_ground_model(world: ET.Element, config: Config) -> None:
         raise SdfExportError("Ground size mismatch")
 
 
-def _build_sdf_tree(boxes: list[WallBox], config: Config) -> ET.ElementTree:
+def _build_sdf_tree(
+    boxes: list[WallBox],
+    polylines: list[SolidPolyline],
+    config: Config,
+) -> ET.ElementTree:
     sdf = ET.Element("sdf", version="1.10")
     world = ET.SubElement(sdf, "world", name="generated_world")
     _append_world_environment(world)
@@ -275,9 +330,36 @@ def _build_sdf_tree(boxes: list[WallBox], config: Config) -> ET.ElementTree:
         _append_box(link, f"{box.name}_collision", box, kind="collision")
         _append_box(link, f"{box.name}_visual", box, kind="visual")
 
+    for polyline in polylines:
+        _append_polyline(link, f"{polyline.name}_collision", polyline, kind="collision")
+        _append_polyline(link, f"{polyline.name}_visual", polyline, kind="visual")
+
     _append_directional_light(world, SUN_LIGHT)
     _append_directional_light(world, FILL_LIGHT)
     return ET.ElementTree(sdf)
+
+
+def _append_polyline(
+    link: ET.Element,
+    name: str,
+    polyline: SolidPolyline,
+    *,
+    kind: str,
+) -> None:
+    element = ET.SubElement(link, kind, name=name)
+    pose = ET.SubElement(element, "pose")
+    pose.text = "0 0 0 0 0 0"
+
+    geometry = ET.SubElement(element, "geometry")
+    poly = ET.SubElement(geometry, "polyline")
+    for x, y in polyline.points:
+        point = ET.SubElement(poly, "point")
+        point.text = f"{x:.6f} {y:.6f}"
+    height = ET.SubElement(poly, "height")
+    height.text = f"{polyline.height:.6f}"
+
+    if kind == "visual":
+        _append_visual_material(element)
 
 
 def _append_ground_model(world: ET.Element, config: Config) -> None:
@@ -380,7 +462,7 @@ def _append_box(
 ) -> None:
     element = ET.SubElement(link, kind, name=name)
     pose = ET.SubElement(element, "pose")
-    pose.text = _format_pose(box.center_x, box.center_y, box.center_z)
+    pose.text = _format_pose(box.center_x, box.center_y, box.center_z, box.yaw)
 
     geometry = ET.SubElement(element, "geometry")
     box_geometry = ET.SubElement(geometry, "box")
@@ -397,8 +479,8 @@ def _write_pretty_xml(tree: ET.ElementTree, output_path: Path) -> None:
     output_path.write_text(pretty, encoding="utf-8")
 
 
-def _format_pose(x: float, y: float, z: float) -> str:
-    return f"{x:.6f} {y:.6f} {z:.6f} 0 0 0"
+def _format_pose(x: float, y: float, z: float, yaw: float = 0.0) -> str:
+    return f"{x:.6f} {y:.6f} {z:.6f} 0 0 {yaw:.6f}"
 
 
 def _format_size(x: float, y: float, z: float) -> str:

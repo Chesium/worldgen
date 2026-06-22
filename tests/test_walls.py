@@ -76,19 +76,18 @@ def _build_wall_layout(room_ids: set[int], config: Config, seed: int):
 
 
 def test_wall_segments_do_not_overlap_openings() -> None:
+    from shapely.geometry import LineString
+
     config = _sample_config()
     _, opening_layout, wall_layout = _build_wall_layout({0, 1, 3}, config, 42)
     validate_wall_layout(wall_layout, config)
 
     for opening in opening_layout.openings:
+        opening_line = LineString(opening.endpoints())
         for segment in wall_layout.segments:
-            if segment.orientation != opening.shared_wall.orientation:
-                continue
-            if abs(segment.fixed_coord - opening.shared_wall.fixed_coord) > 1e-9:
-                continue
-            overlap_start = max(segment.span_start, opening.span_start)
-            overlap_end = min(segment.span_end, opening.span_end)
-            assert overlap_end - overlap_start <= 1e-9
+            segment_line = LineString([segment.p1, segment.p2])
+            overlap = segment_line.intersection(opening_line)
+            assert overlap.length <= 1e-9
 
 
 def test_passage_passage_boundary_skips_interior_wall() -> None:
@@ -122,9 +121,8 @@ def test_unused_cells_produce_solid_fill_not_walls() -> None:
     }
     assert unused_ids == {2, 3}
     assert len(wall_layout.unused_solids) == 2
-    for rect in wall_layout.unused_solids:
-        assert rect.width > 0
-        assert rect.height > 0
+    for solid in wall_layout.unused_solids:
+        assert solid.area > 0
 
 
 def test_gate_opening_splits_shared_wall() -> None:

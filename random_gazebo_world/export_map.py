@@ -8,9 +8,12 @@ from pathlib import Path
 import numpy as np
 import yaml
 from PIL import Image
+from shapely import contains_xy
+from shapely.geometry import LineString, Polygon
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
 
 from random_gazebo_world.config import Config
-from random_gazebo_world.geometry import EPS
 from random_gazebo_world.topology import CellRole
 from random_gazebo_world.walls import WallLayout, WallSegment
 
@@ -80,59 +83,39 @@ def generate_occupancy_map(
     height = max(1, math.ceil(partition.world_height / resolution))
     grid = np.full((height, width), OCCUPIED_VALUE, dtype=np.uint8)
 
+    grid_x, grid_y = _pixel_center_grid(
+        width, height, resolution, origin_x, origin_y
+    )
+
     passage_geometry = wall_layout.passage_geometry
+    free_geometries: list[BaseGeometry] = []
     for cell in partition.cells:
         role = layout.role_for(cell.id)
-        if role not in {CellRole.ROOM, CellRole.PASSAGE}:
-            continue
+        if role is CellRole.ROOM:
+            free_geometries.append(cell.polygon)
+        elif role is CellRole.PASSAGE:
+            corridor = (
+                passage_geometry.corridor_for(cell.id)
+                if passage_geometry is not None
+                else None
+            )
+            if corridor is not None and not corridor.is_empty:
+                free_geometries.append(corridor)
+            else:
+                free_geometries.append(cell.polygon)
 
-        if role is CellRole.PASSAGE and passage_geometry is not None:
-            for corridor in passage_geometry.corridor_for(cell.id):
-                _mark_rectangle_free(
-                    grid,
-                    corridor.x_min,
-                    corridor.y_min,
-                    corridor.x_max,
-                    corridor.y_max,
-                    resolution,
-                    origin_x,
-                    origin_y,
-                )
-            continue
+    if free_geometries:
+        free_geom = unary_union(free_geometries)
+        grid[contains_xy(free_geom, grid_x, grid_y)] = FREE_VALUE
 
-        _mark_rectangle_free(
-            grid,
-            cell.x_min,
-            cell.y_min,
-            cell.x_max,
-            cell.y_max,
-            resolution,
-            origin_x,
-            origin_y,
-        )
-
+    occupied_geometries: list[BaseGeometry] = list(wall_layout.unused_solids)
     half_thickness = config.wall_thickness / 2.0
     for segment in wall_layout.segments:
-        _mark_wall_segment_occupied(
-            grid,
-            segment,
-            half_thickness,
-            resolution,
-            origin_x,
-            origin_y,
-        )
+        occupied_geometries.append(_segment_polygon(segment, half_thickness))
 
-    for rect in wall_layout.unused_solids:
-        _mark_rectangle_occupied(
-            grid,
-            rect.x_min,
-            rect.y_min,
-            rect.x_max,
-            rect.y_max,
-            resolution,
-            origin_x,
-            origin_y,
-        )
+    if occupied_geometries:
+        occupied_geom = unary_union(occupied_geometries)
+        grid[contains_xy(occupied_geom, grid_x, grid_y)] = OCCUPIED_VALUE
 
     start_cell, goal_cell = _sample_start_goal_cells(
         grid,
@@ -193,78 +176,23 @@ def _write_preview(path: Path, occupancy: OccupancyMap) -> None:
     Image.fromarray(preview).save(path)
 
 
-def _mark_rectangle_free(
-    grid: np.ndarray,
-    x_min: float,
-    y_min: float,
-    x_max: float,
-    y_max: float,
+def _pixel_center_grid(
+    width: int,
+    height: int,
     resolution: float,
     origin_x: float,
     origin_y: float,
-) -> None:
-    height, width = grid.shape
-    for row in range(height):
-        for col in range(width):
-            world_x, world_y = _grid_cell_center(
-                col, row, resolution, origin_x, origin_y, height
-            )
-            if x_min - EPS <= world_x <= x_max + EPS and y_min - EPS <= world_y <= y_max + EPS:
-                grid[row, col] = FREE_VALUE
+) -> tuple[np.ndarray, np.ndarray]:
+    cols = np.arange(width)
+    rows = np.arange(height)
+    world_x = origin_x + (cols + 0.5) * resolution
+    world_y = origin_y + (height - 1 - rows + 0.5) * resolution
+    return np.meshgrid(world_x, world_y)
 
 
-def _mark_rectangle_occupied(
-    grid: np.ndarray,
-    x_min: float,
-    y_min: float,
-    x_max: float,
-    y_max: float,
-    resolution: float,
-    origin_x: float,
-    origin_y: float,
-) -> None:
-    height, width = grid.shape
-    for row in range(height):
-        for col in range(width):
-            world_x, world_y = _grid_cell_center(
-                col, row, resolution, origin_x, origin_y, height
-            )
-            if x_min - EPS <= world_x <= x_max + EPS and y_min - EPS <= world_y <= y_max + EPS:
-                grid[row, col] = OCCUPIED_VALUE
-
-
-def _mark_wall_segment_occupied(
-    grid: np.ndarray,
-    segment: WallSegment,
-    half_thickness: float,
-    resolution: float,
-    origin_x: float,
-    origin_y: float,
-) -> None:
-    height, width = grid.shape
-    for row in range(height):
-        for col in range(width):
-            world_x, world_y = _grid_cell_center(
-                col, row, resolution, origin_x, origin_y, height
-            )
-            if _point_in_wall_segment(world_x, world_y, segment, half_thickness):
-                grid[row, col] = OCCUPIED_VALUE
-
-
-def _point_in_wall_segment(
-    world_x: float,
-    world_y: float,
-    segment: WallSegment,
-    half_thickness: float,
-) -> bool:
-    if segment.orientation == "vertical":
-        if abs(world_x - segment.fixed_coord) > half_thickness + EPS:
-            return False
-        return segment.span_start - EPS <= world_y <= segment.span_end + EPS
-
-    if abs(world_y - segment.fixed_coord) > half_thickness + EPS:
-        return False
-    return segment.span_start - EPS <= world_x <= segment.span_end + EPS
+def _segment_polygon(segment: WallSegment, half_thickness: float) -> Polygon:
+    line = LineString([segment.p1, segment.p2])
+    return line.buffer(half_thickness, cap_style="flat", join_style="mitre")
 
 
 def _grid_cell_center(
@@ -393,6 +321,7 @@ def _free_cells_for_room(
     origin_y: float,
 ) -> list[tuple[int, int]]:
     cell = next(item for item in layout.partition.cells if item.id == room_id)
+    polygon = cell.polygon
     cells: list[tuple[int, int]] = []
     height, width = grid.shape
 
@@ -403,10 +332,7 @@ def _free_cells_for_room(
             world_x, world_y = _grid_cell_center(
                 col, row, resolution, origin_x, origin_y, height
             )
-            if (
-                cell.x_min - EPS <= world_x <= cell.x_max + EPS
-                and cell.y_min - EPS <= world_y <= cell.y_max + EPS
-            ):
+            if contains_xy(polygon, world_x, world_y):
                 cells.append((row, col))
 
     return cells

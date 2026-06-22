@@ -33,7 +33,11 @@ class LogicalOpening:
 
 @dataclass(frozen=True)
 class Opening:
-    """Concrete doorway opening placed on a shared wall segment."""
+    """Concrete doorway opening placed on a shared wall segment.
+
+    ``span_start`` and ``span_end`` are arc-length offsets along the shared wall
+    measured from ``shared_wall.p1`` (both in ``[0, shared_wall.length]``).
+    """
 
     cell_a_id: int
     cell_b_id: int
@@ -46,6 +50,16 @@ class Opening:
     @property
     def center(self) -> float:
         return (self.span_start + self.span_end) / 2.0
+
+    @property
+    def midpoint(self) -> tuple[float, float]:
+        return self.shared_wall.point_at_arc_length(self.center)
+
+    def endpoints(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        return (
+            self.shared_wall.point_at_arc_length(self.span_start),
+            self.shared_wall.point_at_arc_length(self.span_end),
+        )
 
 
 @dataclass(frozen=True)
@@ -88,17 +102,18 @@ def place_opening(
     rng: random.Random,
 ) -> Opening:
     wall = logical_opening.shared_wall
-    if wall.length + EPS < width_min:
+    length = wall.length
+    if length + EPS < width_min:
         raise OpeningError(
             f"Shared wall {logical_opening.cell_a_id}-{logical_opening.cell_b_id} "
-            f"length {wall.length} is shorter than minimum width {width_min}"
+            f"length {length} is shorter than minimum width {width_min}"
         )
 
-    max_width = min(width_max, wall.length)
+    max_width = min(width_max, length)
     width = rng.uniform(width_min, max_width)
 
-    min_center = wall.span_start + width / 2.0
-    max_center = wall.span_end - width / 2.0
+    min_center = width / 2.0
+    max_center = length - width / 2.0
     if min_center > max_center + EPS:
         raise OpeningError(
             f"Cannot fit opening width {width} on shared wall "
@@ -136,11 +151,11 @@ def validate_openings(opening_layout: OpeningLayout, config: Config) -> None:
             )
 
         wall = opening.shared_wall
-        if opening.span_start < wall.span_start - EPS:
+        if opening.span_start < -EPS:
             raise OpeningError(
                 f"Opening {opening.cell_a_id}-{opening.cell_b_id} starts before wall"
             )
-        if opening.span_end > wall.span_end + EPS:
+        if opening.span_end > wall.length + EPS:
             raise OpeningError(
                 f"Opening {opening.cell_a_id}-{opening.cell_b_id} ends after wall"
             )
@@ -151,13 +166,4 @@ def validate_openings(opening_layout: OpeningLayout, config: Config) -> None:
 
 
 def opening_line(opening: Opening) -> tuple[tuple[float, float], tuple[float, float]]:
-    wall = opening.shared_wall
-    if wall.orientation == "vertical":
-        return (
-            (wall.fixed_coord, opening.span_start),
-            (wall.fixed_coord, opening.span_end),
-        )
-    return (
-        (opening.span_start, wall.fixed_coord),
-        (opening.span_end, wall.fixed_coord),
-    )
+    return opening.endpoints()

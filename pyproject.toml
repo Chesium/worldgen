@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml",
     "pytest",
     "shapely",
+    "scipy>=1.18.0",
 ]
 
 [build-system]

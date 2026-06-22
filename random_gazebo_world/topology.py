@@ -522,17 +522,48 @@ def validate_passage_constraints(
 
 
 def _opening_edge(cell: Cell, shared_wall: SharedWall) -> str | None:
-    if shared_wall.orientation == "vertical":
-        if abs(shared_wall.fixed_coord - cell.x_min) <= EPS:
-            return "x_min"
-        if abs(shared_wall.fixed_coord - cell.x_max) <= EPS:
-            return "x_max"
+    if cell.is_rectangle:
+        if shared_wall.orientation == "vertical":
+            if abs(shared_wall.fixed_coord - cell.x_min) <= EPS:
+                return "x_min"
+            if abs(shared_wall.fixed_coord - cell.x_max) <= EPS:
+                return "x_max"
+            return None
+        if shared_wall.orientation == "horizontal":
+            if abs(shared_wall.fixed_coord - cell.y_min) <= EPS:
+                return "y_min"
+            if abs(shared_wall.fixed_coord - cell.y_max) <= EPS:
+                return "y_max"
         return None
-    if abs(shared_wall.fixed_coord - cell.y_min) <= EPS:
-        return "y_min"
-    if abs(shared_wall.fixed_coord - cell.y_max) <= EPS:
-        return "y_max"
+    return _polygon_opening_edge(cell, shared_wall)
+
+
+def _polygon_opening_edge(cell: Cell, shared_wall: SharedWall) -> str | None:
+    for edge in cell.edges:
+        if _point_on_segment(shared_wall.p1, edge.a, edge.b) and _point_on_segment(
+            shared_wall.p2, edge.a, edge.b
+        ):
+            return f"edge{edge.index}"
     return None
+
+
+def _point_on_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+    tol: float = 1e-6,
+) -> bool:
+    px, py = point
+    ax, ay = start
+    bx, by = end
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    seg_length = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+    if seg_length <= EPS:
+        return False
+    if abs(cross) / seg_length > tol:
+        return False
+    dot = (px - ax) * (bx - ax) + (py - ay) * (by - ay)
+    return -tol <= dot <= seg_length * seg_length + tol
 
 
 def _constrained_spanning_tree(

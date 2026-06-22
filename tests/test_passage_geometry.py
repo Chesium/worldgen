@@ -46,23 +46,19 @@ def _sample_config(**overrides: float | int) -> Config:
 
 
 def _opening(edge: str, center: float, width: float, other_id: int) -> Opening:
+    """Build an opening centered at ``center`` on a full cell edge.
+
+    ``span_start``/``span_end`` are arc-length offsets along the shared wall,
+    which always begins at the lower corner of the edge so arc-length matches
+    the absolute coordinate.
+    """
     half = width / 2.0
     if edge in {"x_min", "x_max"}:
         fixed = CELL.x_min if edge == "x_min" else CELL.x_max
-        shared_wall = SharedWall(
-            orientation="vertical",
-            fixed_coord=fixed,
-            span_start=center - half,
-            span_end=center + half,
-        )
+        shared_wall = SharedWall(p1=(fixed, CELL.y_min), p2=(fixed, CELL.y_max))
     else:
         fixed = CELL.y_min if edge == "y_min" else CELL.y_max
-        shared_wall = SharedWall(
-            orientation="horizontal",
-            fixed_coord=fixed,
-            span_start=center - half,
-            span_end=center + half,
-        )
+        shared_wall = SharedWall(p1=(CELL.x_min, fixed), p2=(CELL.x_max, fixed))
     return Opening(
         cell_a_id=PASSAGE_ID,
         cell_b_id=other_id,
@@ -95,16 +91,24 @@ def _passage_layout(openings: list[Opening]) -> OpeningLayout:
 
 
 def _corridor_area(layout) -> float:
-    return sum(rect.area for cell in layout.cells for rect in cell.corridor)
+    return sum(cell.corridor.area for cell in layout.cells)
 
 
 def _solid_area(layout) -> float:
-    return sum(rect.area for cell in layout.cells for rect in cell.solids)
+    return sum(solid.area for cell in layout.cells for solid in cell.solids)
 
 
 def _assert_tiles_cell(layout) -> None:
-    cell_area = CELL.width * CELL.height
-    assert _corridor_area(layout) + _solid_area(layout) == pytest.approx(cell_area)
+    cell_area = CELL.area
+    assert _corridor_area(layout) + _solid_area(layout) == pytest.approx(
+        cell_area, abs=1e-4
+    )
+
+
+def _corridor_reaches(cell_geometry, point: tuple[float, float]) -> bool:
+    from shapely.geometry import Point
+
+    return cell_geometry.corridor.distance(Point(point)) <= 1e-6
 
 
 def test_straight_corridor_aligned_openings() -> None:
@@ -117,16 +121,16 @@ def test_straight_corridor_aligned_openings() -> None:
     )
     geometry = generate_passage_geometry(layout, config)
 
-    assert _corridor_area(geometry) == pytest.approx(4.0)
-    _assert_tiles_cell(geometry)
-
     cell_geometry = geometry.cells[0]
-    y_min = min(rect.y_min for rect in cell_geometry.corridor)
-    y_max = max(rect.y_max for rect in cell_geometry.corridor)
-    assert y_max - y_min == pytest.approx(1.0)
+    assert cell_geometry.corridor.geom_type == "Polygon"
+    # Straight corridor across the cell: width 1 over length 4.
+    assert _corridor_area(geometry) == pytest.approx(4.0, abs=1e-3)
+    _assert_tiles_cell(geometry)
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 2.0))
 
 
-def test_corridor_width_is_min_of_pair() -> None:
+def test_corridor_width_matches_each_port() -> None:
     config = _sample_config()
     layout = _passage_layout(
         [
@@ -136,8 +140,13 @@ def test_corridor_width_is_min_of_pair() -> None:
     )
     geometry = generate_passage_geometry(layout, config)
 
-    assert _corridor_area(geometry) == pytest.approx(4.0 * 0.6)
+    cell_geometry = geometry.cells[0]
     _assert_tiles_cell(geometry)
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 2.0))
+    # Each leg keeps its own opening width, so the corridor is wider near the
+    # wider opening than the old min-of-pair behavior.
+    assert _corridor_area(geometry) > 4.0 * 0.6
 
 
 def test_l_shaped_corridor_adjacent_edges() -> None:
@@ -151,8 +160,11 @@ def test_l_shaped_corridor_adjacent_edges() -> None:
     geometry = generate_passage_geometry(layout, config)
 
     _assert_tiles_cell(geometry)
-    assert geometry.cells[0].corridor
-    assert geometry.cells[0].solids
+    cell_geometry = geometry.cells[0]
+    assert not cell_geometry.corridor.is_empty
+    assert cell_geometry.solids
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (2.0, 0.0))
 
 
 def test_z_shaped_corridor_offset_openings() -> None:
@@ -166,7 +178,10 @@ def test_z_shaped_corridor_offset_openings() -> None:
     geometry = generate_passage_geometry(layout, config)
 
     _assert_tiles_cell(geometry)
-    assert geometry.cells[0].corridor
+    cell_geometry = geometry.cells[0]
+    assert not cell_geometry.corridor.is_empty
+    assert _corridor_reaches(cell_geometry, (0.0, 1.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 3.0))
 
 
 def test_three_way_junction_unions_paths() -> None:

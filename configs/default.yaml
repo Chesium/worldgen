@@ -2,8 +2,8 @@ world_width: 20.0
 world_height: 20.0
 min_cell_size: 2.0
 max_cell_size: 6.0
-min_room_count: 16
-max_room_count: 16
+min_room_count: 8
+max_room_count: 8
 wall_height: 2.5
 wall_thickness: 0.15
 gate_width_min: 0.5
@@ -18,3 +18,8 @@ random_seed: 10667
 max_attempts: 100000
 max_selection_attempts: 64
 ground_thickness: 0.1
+partition_method: voronoi
+voronoi_seed_count: 16
+voronoi_lloyd_iterations: 8
+voronoi_min_cell_area: 1.0
+voronoi_max_cell_area: 64.0

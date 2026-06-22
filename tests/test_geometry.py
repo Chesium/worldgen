@@ -12,6 +12,56 @@ from random_gazebo_world.geometry import (
 )
 
 
+def test_polygon_cell_properties() -> None:
+    triangle = Cell.from_polygon(7, ((0.0, 0.0), (4.0, 0.0), (0.0, 3.0)))
+    assert not triangle.is_rectangle
+    assert triangle.area == pytest.approx(6.0)
+    assert triangle.x_min == 0.0 and triangle.x_max == 4.0
+    assert triangle.y_min == 0.0 and triangle.y_max == 3.0
+    assert len(triangle.edges) == 3
+    cx, cy = triangle.centroid
+    assert (cx, cy) == pytest.approx((4.0 / 3.0, 1.0))
+
+
+def test_polygon_cell_orients_ccw() -> None:
+    # Provided clockwise; should be reoriented counter-clockwise (positive area).
+    square = Cell.from_polygon(
+        1, ((0.0, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0))
+    )
+    assert square.area == pytest.approx(4.0)
+
+
+def test_shared_wall_from_endpoints_axis_accessors() -> None:
+    wall = SharedWall(p1=(2.0, 0.0), p2=(2.0, 4.0))
+    assert wall.orientation == "vertical"
+    assert wall.fixed_coord == 2.0
+    assert wall.span_start == 0.0
+    assert wall.span_end == 4.0
+    assert wall.length == pytest.approx(4.0)
+    assert wall.point_at_arc_length(2.0) == pytest.approx((2.0, 2.0))
+
+
+def test_shared_wall_diagonal_orientation() -> None:
+    wall = SharedWall(p1=(0.0, 0.0), p2=(3.0, 4.0))
+    assert wall.orientation == "diagonal"
+    assert wall.length == pytest.approx(5.0)
+
+
+def test_get_shared_wall_for_polygon_edge() -> None:
+    left = Cell.from_polygon(0, ((0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)))
+    right = Cell.from_polygon(1, ((2.0, 0.0), (4.0, 0.0), (4.0, 2.0), (2.0, 2.0)))
+    wall = get_shared_wall(left, right)
+    assert wall is not None
+    assert wall.length == pytest.approx(2.0)
+    assert {wall.p1, wall.p2} == {(2.0, 0.0), (2.0, 2.0)}
+
+
+def test_get_shared_wall_polygon_corner_only_returns_none() -> None:
+    a = Cell.from_polygon(0, ((0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)))
+    b = Cell.from_polygon(1, ((2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)))
+    assert get_shared_wall(a, b) is None
+
+
 def test_cell_from_origin_size() -> None:
     cell = Cell.from_origin_size(1, 0.0, 0.0, 4.0, 3.0)
     assert cell.id == 1
