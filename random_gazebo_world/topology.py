@@ -79,6 +79,9 @@ class CandidateConnection:
             raise ValueError("room_a_id must be less than room_b_id for stable ordering")
 
 
+Connection = CandidateConnection
+
+
 @dataclass(frozen=True)
 class CandidateConnections:
     room_selection: RoomSelection

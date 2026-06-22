@@ -146,3 +146,6 @@ def _horizontal_shared_wall(a: Cell, b: Cell, eps: float) -> SharedWall | None:
 
 def _approx_equal(a: float, b: float, eps: float) -> bool:
     return abs(a - b) <= eps
+
+
+Room = Cell

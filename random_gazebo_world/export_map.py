@@ -50,18 +50,19 @@ def export_occupancy_map(
     rng,
 ) -> OccupancyMap:
     occupancy = generate_occupancy_map(wall_layout, config, rng)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    write_occupancy_map_files(occupancy, output_dir)
+    return occupancy
 
-    map_png_path = output_dir / "map.png"
-    map_yaml_path = output_dir / "map.yaml"
+
+def write_occupancy_map_files(occupancy: OccupancyMap, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
     preview_path = output_dir / "debug" / "09_occupancy_map_preview.png"
     preview_path.parent.mkdir(parents=True, exist_ok=True)
 
-    Image.fromarray(occupancy.data).save(map_png_path)
-    _write_map_yaml(map_yaml_path, occupancy)
+    Image.fromarray(occupancy.data).save(output_dir / "map.png")
+    _write_map_yaml(output_dir / "map.yaml", occupancy)
     _write_preview(preview_path, occupancy)
     validate_occupancy_map(occupancy)
-    return occupancy
 
 
 def generate_occupancy_map(
