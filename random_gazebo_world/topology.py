@@ -10,6 +10,7 @@ import networkx as nx
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.config import Config
 from random_gazebo_world.geometry import EPS, Cell, SharedWall, are_adjacent, get_shared_wall
+from random_gazebo_world.openings import LogicalOpening
 from random_gazebo_world.partition import Partition
 
 
@@ -28,6 +29,11 @@ class RoomGraphSelectionError(RuntimeError):
 class CellRole(str, Enum):
     ROOM = "room"
     UNUSED = "unused"
+    PASSAGE = "passage"
+
+
+class AppliedLayoutError(RuntimeError):
+    """Raised when selected connections cannot be applied to the layout."""
 
 
 class ConnectionType(str, Enum):
@@ -95,6 +101,29 @@ class SelectedRoomGraph:
         return frozenset(
             (connection.room_a_id, connection.room_b_id)
             for connection in self.loop_connections
+        )
+
+
+@dataclass(frozen=True)
+class AppliedLayout:
+    partition: Partition
+    room_selection: RoomSelection
+    selected_graph: SelectedRoomGraph
+    passage_cell_ids: frozenset[int]
+    logical_openings: tuple[LogicalOpening, ...]
+
+    def role_for(self, cell_id: int) -> CellRole:
+        if cell_id in self.room_selection.room_cell_ids:
+            return CellRole.ROOM
+        if cell_id in self.passage_cell_ids:
+            return CellRole.PASSAGE
+        return CellRole.UNUSED
+
+    def passage_cells(self) -> tuple[Cell, ...]:
+        return tuple(
+            cell
+            for cell in self.partition.cells
+            if cell.id in self.passage_cell_ids
         )
 
 
@@ -327,6 +356,91 @@ def validate_selected_room_graph(
         tree_graph.add_edge(connection.room_a_id, connection.room_b_id)
     if not nx.is_tree(tree_graph):
         raise RoomGraphSelectionError("Spanning tree connections do not form a tree")
+
+
+def apply_connections(
+    selected_graph: SelectedRoomGraph,
+    adjacency: AdjacencyGraph,
+) -> AppliedLayout:
+    passage_cell_ids: set[int] = set()
+    logical_openings: list[LogicalOpening] = []
+    room_ids = selected_graph.room_selection.room_cell_ids
+
+    for connection in selected_graph.connections:
+        if connection.connection_type == ConnectionType.GATE:
+            if connection.shared_wall is None:
+                raise AppliedLayoutError(
+                    f"Gate {connection.room_a_id}-{connection.room_b_id} missing wall"
+                )
+            logical_openings.append(
+                LogicalOpening(
+                    cell_a_id=min(connection.room_a_id, connection.room_b_id),
+                    cell_b_id=max(connection.room_a_id, connection.room_b_id),
+                    shared_wall=connection.shared_wall,
+                    kind="gate",
+                )
+            )
+            continue
+
+        if len(connection.path_cell_ids) < 3:
+            raise AppliedLayoutError(
+                f"Passage {connection.room_a_id}-{connection.room_b_id} path too short"
+            )
+
+        for cell_id in connection.path_cell_ids[1:-1]:
+            if cell_id in room_ids:
+                raise AppliedLayoutError(
+                    f"Passage {connection.room_a_id}-{connection.room_b_id} "
+                    f"would reclassify room cell {cell_id}"
+                )
+            passage_cell_ids.add(cell_id)
+
+        for left_id, right_id in zip(
+            connection.path_cell_ids, connection.path_cell_ids[1:]
+        ):
+            shared_wall = adjacency.graph[left_id][right_id]["shared_wall"]
+            logical_openings.append(
+                LogicalOpening(
+                    cell_a_id=min(left_id, right_id),
+                    cell_b_id=max(left_id, right_id),
+                    shared_wall=shared_wall,
+                    kind="passage",
+                )
+            )
+
+    layout = AppliedLayout(
+        partition=selected_graph.room_selection.partition,
+        room_selection=selected_graph.room_selection,
+        selected_graph=selected_graph,
+        passage_cell_ids=frozenset(passage_cell_ids),
+        logical_openings=tuple(logical_openings),
+    )
+    validate_applied_layout(layout)
+    return layout
+
+
+def validate_applied_layout(layout: AppliedLayout) -> None:
+    room_ids = layout.room_selection.room_cell_ids
+
+    if layout.passage_cell_ids & room_ids:
+        overlap = sorted(layout.passage_cell_ids & room_ids)
+        raise AppliedLayoutError(f"Room cells reclassified as passage: {overlap}")
+
+    for connection in layout.selected_graph.connections:
+        if connection.connection_type != ConnectionType.PASSAGE:
+            continue
+        intermediate_ids = set(connection.path_cell_ids[1:-1])
+        if not intermediate_ids:
+            raise AppliedLayoutError(
+                f"Passage {connection.room_a_id}-{connection.room_b_id} "
+                "has no intermediate cells"
+            )
+        if not intermediate_ids.issubset(layout.passage_cell_ids):
+            missing = sorted(intermediate_ids - layout.passage_cell_ids)
+            raise AppliedLayoutError(
+                f"Passage {connection.room_a_id}-{connection.room_b_id} "
+                f"missing passage cells: {missing}"
+            )
 
 
 def _randomized_spanning_tree(

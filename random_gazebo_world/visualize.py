@@ -9,6 +9,7 @@ from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.geometry import SharedWall
 from random_gazebo_world.partition import Partition
 from random_gazebo_world.topology import (
+    AppliedLayout,
     CandidateConnections,
     ConnectionType,
     RoomSelection,
@@ -395,6 +396,62 @@ def render_selected_room_graph(
             color="#ff7f0e" if is_loop else "#1f4e79",
             linewidth=3.5 if is_loop else 3.0,
             linestyle="--" if is_loop else "-",
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def render_passage_cells(
+    layout: AppliedLayout,
+    output_base: Path,
+    title: str = "Passage Cells",
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 8))
+    partition = layout.partition
+
+    for cell in partition.cells:
+        role = layout.role_for(cell.id)
+        if role.value == "room":
+            facecolor = "#7bd389"
+            edgecolor = "#1f7a3a"
+            label = f"{cell.id}\nroom"
+            text_color = "#12351f"
+            weight = "bold"
+        elif role.value == "passage":
+            facecolor = "#8ecae6"
+            edgecolor = "#219ebc"
+            label = f"{cell.id}\npassage"
+            text_color = "#023047"
+            weight = "bold"
+        else:
+            facecolor = "#d9d9d9"
+            edgecolor = "#666666"
+            label = f"{cell.id}\nunused"
+            text_color = "#444444"
+            weight = "normal"
+
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor=facecolor,
+                edgecolor=edgecolor,
+                linewidth=1.2,
+                alpha=0.9,
+            )
+        )
+        ax.text(
+            cell.x_min + cell.width / 2.0,
+            cell.y_min + cell.height / 2.0,
+            label,
+            ha="center",
+            va="center",
+            fontsize=8,
+            color=text_color,
+            weight=weight,
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
