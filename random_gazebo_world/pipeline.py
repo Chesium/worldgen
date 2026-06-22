@@ -38,6 +38,7 @@ from random_gazebo_world.topology import (
     generate_candidate_connections,
     select_room_graph,
     select_rooms,
+    validate_passage_constraints,
     validate_selected_room_graph,
 )
 from random_gazebo_world.walls import WallGenerationError, WallLayout, generate_walls
@@ -54,7 +55,6 @@ from random_gazebo_world.visualize import (
 )
 
 
-DEFAULT_MAX_ATTEMPTS = 32
 
 REQUIRED_OUTPUTS = (
     "world.sdf",
@@ -117,11 +117,12 @@ class GeneratedWorld:
 
 def generate_valid_world(
     config: Config,
-    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    max_attempts: int | None = None,
 ) -> GeneratedWorld:
+    attempts = max_attempts if max_attempts is not None else config.max_attempts
     last_error: Exception | None = None
 
-    for attempt in range(max_attempts):
+    for attempt in range(attempts):
         attempt_config = config.with_seed(config.random_seed + attempt)
         rng = create_seeded_rng(attempt_config.random_seed)
         try:
@@ -133,7 +134,7 @@ def generate_valid_world(
             continue
 
     raise WorldGenerationError(
-        f"Failed to generate a valid world after {max_attempts} attempts"
+        f"Failed to generate a valid world after {attempts} attempts"
     ) from last_error
 
 
@@ -210,6 +211,7 @@ def _generate_world_attempt(
     candidates = generate_candidate_connections(room_selection, adjacency, config)
     selected_graph = select_room_graph(candidates, config, rng)
     applied_layout = apply_connections(selected_graph, adjacency)
+    validate_passage_constraints(applied_layout, config)
     opening_layout = generate_openings(applied_layout, config, rng)
     wall_layout = generate_walls(opening_layout, adjacency, config)
     occupancy = generate_occupancy_map(wall_layout, config, rng)

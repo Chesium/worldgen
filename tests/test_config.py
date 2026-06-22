@@ -43,6 +43,64 @@ def test_invalid_config_raises_clear_error(tmp_path: Path) -> None:
         load_config(bad_config)
 
 
+_BASE_CONFIG_LINES = [
+    "world_width: 20.0",
+    "world_height: 20.0",
+    "min_cell_size: 2.0",
+    "max_cell_size: 6.0",
+    "min_room_count: 3",
+    "max_room_count: 8",
+    "wall_height: 2.5",
+    "wall_thickness: 0.15",
+    "gate_width_min: 0.8",
+    "gate_width_max: 1.2",
+    "passage_width_min: 0.8",
+    "passage_width_max: 1.2",
+    "extra_loop_probability: 0.2",
+    "map_resolution: 0.05",
+    "random_seed: 42",
+]
+
+
+def _write_config(tmp_path: Path, extra_lines: list[str]) -> Path:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(_BASE_CONFIG_LINES + extra_lines), encoding="utf-8"
+    )
+    return config_path
+
+
+def test_passage_constraint_fields_default_when_omitted(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path, []))
+    assert config.max_openings_per_passage_edge == 1
+    assert config.max_open_edges_per_passage == 4
+    assert config.max_attempts == 100000
+
+
+def test_max_attempts_below_one_raises(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, ["max_attempts: 0"])
+    with pytest.raises(ConfigError, match="max_attempts"):
+        load_config(config_path)
+
+
+def test_open_edges_below_two_raises(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, ["max_open_edges_per_passage: 1"])
+    with pytest.raises(ConfigError, match="max_open_edges_per_passage"):
+        load_config(config_path)
+
+
+def test_open_edges_above_four_raises(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, ["max_open_edges_per_passage: 5"])
+    with pytest.raises(ConfigError, match="max_open_edges_per_passage"):
+        load_config(config_path)
+
+
+def test_openings_per_edge_below_one_raises(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, ["max_openings_per_passage_edge: 0"])
+    with pytest.raises(ConfigError, match="max_openings_per_passage_edge"):
+        load_config(config_path)
+
+
 def test_missing_field_raises_clear_error(tmp_path: Path) -> None:
     bad_config = tmp_path / "missing.yaml"
     bad_config.write_text("world_width: 20.0\n", encoding="utf-8")

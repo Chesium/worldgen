@@ -28,6 +28,9 @@ class Config:
     extra_loop_probability: float
     map_resolution: float
     random_seed: int
+    max_openings_per_passage_edge: int = 1
+    max_open_edges_per_passage: int = 4
+    max_attempts: int = 100000
 
     def validate(self) -> None:
         _require_positive(self.world_width, "world_width")
@@ -50,6 +53,18 @@ class Config:
         )
         _require_probability(self.extra_loop_probability, "extra_loop_probability")
         _require_positive(self.map_resolution, "map_resolution")
+        _require_positive_int(
+            self.max_openings_per_passage_edge, "max_openings_per_passage_edge"
+        )
+        _require_positive_int(
+            self.max_open_edges_per_passage, "max_open_edges_per_passage"
+        )
+        if not 2 <= self.max_open_edges_per_passage <= 4:
+            raise ConfigError(
+                "max_open_edges_per_passage must be between 2 and 4, got "
+                f"{self.max_open_edges_per_passage}"
+            )
+        _require_positive_int(self.max_attempts, "max_attempts")
 
     def with_seed(self, seed: int) -> Config:
         return replace(self, random_seed=seed)
@@ -83,6 +98,11 @@ def load_config(path: Path | str) -> Config:
             extra_loop_probability=_require_field(raw, "extra_loop_probability"),
             map_resolution=_require_field(raw, "map_resolution"),
             random_seed=_require_field(raw, "random_seed"),
+            max_openings_per_passage_edge=raw.get(
+                "max_openings_per_passage_edge", 1
+            ),
+            max_open_edges_per_passage=raw.get("max_open_edges_per_passage", 4),
+            max_attempts=raw.get("max_attempts", 100000),
         )
     except KeyError as exc:
         raise ConfigError(f"Missing required config field: {exc.args[0]}") from exc

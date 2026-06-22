@@ -446,6 +446,63 @@ def validate_applied_layout(layout: AppliedLayout) -> None:
             )
 
 
+def validate_passage_constraints(
+    layout: AppliedLayout,
+    config: Config,
+) -> None:
+    if not layout.passage_cell_ids:
+        return
+
+    cells_by_id = {cell.id: cell for cell in layout.partition.cells}
+
+    for cell_id in layout.passage_cell_ids:
+        cell = cells_by_id.get(cell_id)
+        if cell is None:
+            raise AppliedLayoutError(
+                f"Passage cell {cell_id} not found in partition"
+            )
+
+        edge_counts: dict[str, int] = {}
+        for opening in layout.logical_openings:
+            if cell_id not in (opening.cell_a_id, opening.cell_b_id):
+                continue
+            edge = _opening_edge(cell, opening.shared_wall)
+            if edge is None:
+                raise AppliedLayoutError(
+                    f"Opening {opening.cell_a_id}-{opening.cell_b_id} does not lie "
+                    f"on an edge of passage cell {cell_id}"
+                )
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+
+        for edge, count in edge_counts.items():
+            if count > config.max_openings_per_passage_edge:
+                raise AppliedLayoutError(
+                    f"Passage cell {cell_id} edge {edge} has {count} openings, "
+                    f"exceeds max {config.max_openings_per_passage_edge}"
+                )
+
+        open_edge_count = len(edge_counts)
+        if open_edge_count > config.max_open_edges_per_passage:
+            raise AppliedLayoutError(
+                f"Passage cell {cell_id} has openings on {open_edge_count} edges, "
+                f"exceeds max {config.max_open_edges_per_passage}"
+            )
+
+
+def _opening_edge(cell: Cell, shared_wall: SharedWall) -> str | None:
+    if shared_wall.orientation == "vertical":
+        if abs(shared_wall.fixed_coord - cell.x_min) <= EPS:
+            return "x_min"
+        if abs(shared_wall.fixed_coord - cell.x_max) <= EPS:
+            return "x_max"
+        return None
+    if abs(shared_wall.fixed_coord - cell.y_min) <= EPS:
+        return "y_min"
+    if abs(shared_wall.fixed_coord - cell.y_max) <= EPS:
+        return "y_max"
+    return None
+
+
 def _randomized_spanning_tree(
     connections: tuple[CandidateConnection, ...],
     room_ids: list[int],
