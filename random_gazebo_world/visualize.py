@@ -566,3 +566,95 @@ def render_wall_segments(
     _setup_axes(ax, partition.world_width, partition.world_height, title)
     fig.tight_layout()
     _save_figure(fig, output_base)
+
+
+def render_final_floorplan(
+    wall_layout: WallLayout,
+    output_base: Path,
+    title: str = "Final Floor Plan",
+) -> None:
+    opening_layout = wall_layout.opening_layout
+    layout = opening_layout.applied_layout
+    partition = layout.partition
+    cells_by_id = {cell.id: cell for cell in partition.cells}
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    for cell in partition.cells:
+        role = layout.role_for(cell.id)
+        if role.value == "room":
+            facecolor = "#7bd389"
+            edgecolor = "#1f7a3a"
+            label = str(cell.id)
+        elif role.value == "passage":
+            facecolor = "#8ecae6"
+            edgecolor = "#219ebc"
+            label = str(cell.id)
+        else:
+            facecolor = "#ececec"
+            edgecolor = "#aaaaaa"
+            label = ""
+
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor=facecolor,
+                edgecolor=edgecolor,
+                linewidth=1.0,
+                alpha=0.95,
+            )
+        )
+        if label:
+            ax.text(
+                cell.x_min + cell.width / 2.0,
+                cell.y_min + cell.height / 2.0,
+                label,
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="#12351f",
+                weight="bold",
+            )
+
+    for segment in wall_layout.segments:
+        start, end = wall_segment_line(segment)
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color="#111111",
+            linewidth=3.0,
+            solid_capstyle="butt",
+            zorder=4,
+        )
+
+    for opening in opening_layout.openings:
+        start, end = opening_line(opening)
+        color = "#d4a017" if opening.kind == "gate" else "#7b2cbf"
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color=color,
+            linewidth=4.5,
+            solid_capstyle="round",
+            zorder=5,
+        )
+
+    for connection in layout.selected_graph.connections:
+        if connection.connection_type != ConnectionType.PASSAGE:
+            continue
+        path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
+        xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
+        ax.plot(
+            xs,
+            ys,
+            color="#5a189a",
+            linewidth=1.5,
+            linestyle="--",
+            alpha=0.8,
+            zorder=3,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)

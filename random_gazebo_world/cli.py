@@ -10,6 +10,11 @@ from random_gazebo_world.partition import generate_partition
 from random_gazebo_world.rng import create_seeded_rng
 from random_gazebo_world.export_map import export_occupancy_map
 from random_gazebo_world.export_sdf import export_world_sdf
+from random_gazebo_world.metadata import (
+    build_layout_document,
+    export_layout_json,
+    export_metadata_json,
+)
 from random_gazebo_world.openings import generate_openings
 from random_gazebo_world.walls import generate_walls
 from random_gazebo_world.topology import (
@@ -24,6 +29,7 @@ from random_gazebo_world.visualize import (
     render_openings,
     render_partition,
     render_passage_cells,
+    render_final_floorplan,
     render_selected_room_graph,
     render_selected_rooms,
     render_wall_segments,
@@ -73,6 +79,9 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     applied_layout = apply_connections(selected_graph, adjacency)
     opening_layout = generate_openings(applied_layout, config, rng)
     wall_layout = generate_walls(opening_layout, adjacency, config)
+    layout_document = build_layout_document(applied_layout, opening_layout, wall_layout)
+    export_layout_json(out_dir / "layout.json", layout_document)
+    export_metadata_json(out_dir / "metadata.json", config, layout_document, selected_graph)
     render_partition(partition, debug_dir / "01_partition")
     render_selected_rooms(partition, room_selection, debug_dir / "02_selected_rooms")
     render_adjacency_graph(partition, adjacency, debug_dir / "03_cell_adjacency_graph")
@@ -92,6 +101,7 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     render_wall_segments(wall_layout, debug_dir / "08_wall_segments")
     export_occupancy_map(wall_layout, config, out_dir, rng)
     export_world_sdf(wall_layout, config, out_dir / "world.sdf")
+    render_final_floorplan(wall_layout, debug_dir / "10_final_floorplan")
     return rng
 
 
