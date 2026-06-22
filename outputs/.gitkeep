@@ -1,0 +1,3 @@
+# Generated world outputs (keep directory, ignore contents)
+outputs/*
+!outputs/.gitkeep
