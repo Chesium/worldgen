@@ -5,7 +5,9 @@ import random
 from pathlib import Path
 
 from random_gazebo_world.config import Config, load_config
+from random_gazebo_world.partition import generate_partition
 from random_gazebo_world.rng import create_seeded_rng
+from random_gazebo_world.visualize import render_partition
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,8 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def generate_world(config: Config, out_dir: Path) -> random.Random:
     out_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir = out_dir / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
     rng = create_seeded_rng(config.random_seed)
-    # Later passes will populate world.sdf, maps, debug visualizations, etc.
+    partition = generate_partition(config, rng)
+    render_partition(partition, debug_dir / "01_partition")
     return rng
 
 
