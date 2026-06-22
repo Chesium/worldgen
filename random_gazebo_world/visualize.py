@@ -8,7 +8,7 @@ from matplotlib.patches import Rectangle
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.geometry import SharedWall
 from random_gazebo_world.partition import Partition
-from random_gazebo_world.topology import RoomSelection
+from random_gazebo_world.topology import CandidateConnections, ConnectionType, RoomSelection
 
 
 def _setup_axes(
@@ -199,6 +199,91 @@ def render_selected_rooms(
             fontsize=9,
             color="#12351f",
             weight="bold",
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def _cell_centroid(cell) -> tuple[float, float]:
+    return (
+        cell.x_min + cell.width / 2.0,
+        cell.y_min + cell.height / 2.0,
+    )
+
+
+def render_candidate_connections(
+    partition: Partition,
+    room_selection: RoomSelection,
+    candidates: CandidateConnections,
+    output_base: Path,
+    title: str = "Candidate Connections",
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 8))
+    cells_by_id = {cell.id: cell for cell in partition.cells}
+
+    for cell in room_selection.unused_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#d9d9d9",
+                edgecolor="#666666",
+                linewidth=1.0,
+                alpha=0.9,
+            )
+        )
+
+    for cell in room_selection.room_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#7bd389",
+                edgecolor="#1f7a3a",
+                linewidth=1.5,
+                alpha=0.9,
+            )
+        )
+        ax.text(
+            cell.x_min + cell.width / 2.0,
+            cell.y_min + cell.height / 2.0,
+            str(cell.id),
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#12351f",
+            weight="bold",
+        )
+
+    for connection in candidates.connections:
+        if connection.connection_type == ConnectionType.GATE:
+            assert connection.shared_wall is not None
+            start, end = _shared_wall_line(connection.shared_wall)
+            ax.plot(
+                [start[0], end[0]],
+                [start[1], end[1]],
+                color="#d4a017",
+                linewidth=4.0,
+                solid_capstyle="round",
+                zorder=4,
+            )
+            continue
+
+        path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
+        xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
+        ax.plot(
+            xs,
+            ys,
+            color="#7b2cbf",
+            linewidth=2.5,
+            linestyle="-",
+            marker="o",
+            markersize=5,
+            zorder=4,
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
