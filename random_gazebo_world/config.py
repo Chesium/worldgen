@@ -31,6 +31,7 @@ class Config:
     max_openings_per_passage_edge: int = 1
     max_open_edges_per_passage: int = 4
     max_attempts: int = 100000
+    ground_thickness: float = 0.1
 
     def validate(self) -> None:
         _require_positive(self.world_width, "world_width")
@@ -65,6 +66,7 @@ class Config:
                 f"{self.max_open_edges_per_passage}"
             )
         _require_positive_int(self.max_attempts, "max_attempts")
+        _require_positive(self.ground_thickness, "ground_thickness")
 
     def with_seed(self, seed: int) -> Config:
         return replace(self, random_seed=seed)
@@ -103,6 +105,7 @@ def load_config(path: Path | str) -> Config:
             ),
             max_open_edges_per_passage=raw.get("max_open_edges_per_passage", 4),
             max_attempts=raw.get("max_attempts", 100000),
+            ground_thickness=raw.get("ground_thickness", 0.1),
         )
     except KeyError as exc:
         raise ConfigError(f"Missing required config field: {exc.args[0]}") from exc

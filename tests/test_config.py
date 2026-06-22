@@ -75,6 +75,13 @@ def test_passage_constraint_fields_default_when_omitted(tmp_path: Path) -> None:
     assert config.max_openings_per_passage_edge == 1
     assert config.max_open_edges_per_passage == 4
     assert config.max_attempts == 100000
+    assert config.ground_thickness == 0.1
+
+
+def test_ground_thickness_below_zero_raises(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, ["ground_thickness: 0"])
+    with pytest.raises(ConfigError, match="ground_thickness"):
+        load_config(config_path)
 
 
 def test_max_attempts_below_one_raises(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config
 from random_gazebo_world.export_sdf import (
     export_world_sdf,
+    ground_box,
     validate_world_sdf,
     wall_segment_to_box,
 )
@@ -110,13 +111,92 @@ def test_export_world_sdf_matches_all_wall_segments(tmp_path: Path) -> None:
     sdf_path = tmp_path / "world.sdf"
     export_world_sdf(wall_layout, config, sdf_path)
 
-    link = ET.parse(sdf_path).getroot().find("world/model/link")
+    world = ET.parse(sdf_path).getroot().find("world")
+    walls_model = next(
+        model for model in world.findall("model") if model.get("name") == "walls"
+    )
+    link = walls_model.find("link")
     assert link is not None
     expected = len(wall_layout.segments) + len(wall_layout.unused_solids)
     if wall_layout.passage_geometry is not None:
         expected += len(wall_layout.passage_geometry.solids)
     assert len(link.findall("collision")) == expected
     assert len(link.findall("visual")) == expected
+
+
+def test_ground_box_matches_world_dimensions() -> None:
+    config = _sample_config(ground_thickness=0.2)
+    box = ground_box(config)
+    assert box.center_x == pytest.approx(10.0)
+    assert box.center_y == pytest.approx(10.0)
+    assert box.center_z == pytest.approx(-0.1)
+    assert box.size_x == pytest.approx(20.0)
+    assert box.size_y == pytest.approx(20.0)
+    assert box.size_z == pytest.approx(0.2)
+
+
+def test_export_world_sdf_includes_ground_model(tmp_path: Path) -> None:
+    config = _sample_config(ground_thickness=0.15)
+    wall_layout = _build_wall_layout({0, 1}, config, 1)
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    world = ET.parse(sdf_path).getroot().find("world")
+    ground_model = next(
+        model for model in world.findall("model") if model.get("name") == "ground"
+    )
+    assert ground_model.get("static") == "true"
+
+    collision_size = ground_model.find("link/collision/geometry/box/size")
+    assert collision_size is not None
+    assert collision_size.text.split() == ["20.000000", "20.000000", "0.150000"]
+
+    collision_pose = ground_model.find("link/collision/pose")
+    assert collision_pose is not None
+    assert collision_pose.text.startswith("10.000000 10.000000 -0.075000")
+
+
+def test_export_world_sdf_uses_np_world_lighting_and_material(tmp_path: Path) -> None:
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1}, config, 1)
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    root = ET.parse(sdf_path).getroot()
+    assert root.get("version") == "1.10"
+
+    world = root.find("world")
+    assert world is not None
+    assert world.find("scene/ambient").text == "0.25 0.25 0.25 1"
+    assert world.find("scene/background").text == (
+        "0.550000012 0.600000024 0.649999976 1"
+    )
+    assert world.find("scene/shadows").text == "true"
+    assert world.find("gravity").text == "0 0 -9.8000000000000007"
+    assert world.find("atmosphere") is not None
+
+    sun = next(
+        light for light in world.findall("light") if light.get("name") == "sun"
+    )
+    fill = next(
+        light
+        for light in world.findall("light")
+        if light.get("name") == "fill_light"
+    )
+    assert sun.get("type") == "directional"
+    assert fill.get("type") == "directional"
+
+    walls_model = next(
+        model for model in world.findall("model") if model.get("name") == "walls"
+    )
+    visual = walls_model.find("link/visual")
+    assert visual is not None
+    material = visual.find("material")
+    assert material.find("lighting").text == "true"
+    assert material.find("ambient").text == "0.219999999 0.25 0.270000011 1"
+    assert material.find("diffuse").text == "0.8 0.8 0.8 1"
+    assert material.find("pbr/metal/metalness").text == "0.0"
+    assert material.find("pbr/metal/roughness").text == "0.85"
 
 
 def test_generated_world_sdf_exports(tmp_path: Path) -> None:

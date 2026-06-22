@@ -16,3 +16,4 @@ extra_loop_probability: 0.2
 map_resolution: 0.05
 random_seed: 10667
 max_attempts: 100000
+ground_thickness: 0.1
