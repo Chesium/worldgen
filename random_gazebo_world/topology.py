@@ -5,6 +5,8 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
+import networkx as nx
+
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.config import Config
 from random_gazebo_world.geometry import EPS, Cell, SharedWall, are_adjacent, get_shared_wall
@@ -17,6 +19,10 @@ class RoomSelectionError(RuntimeError):
 
 class CandidateConnectionError(RuntimeError):
     """Raised when candidate connections are invalid."""
+
+
+class RoomGraphSelectionError(RuntimeError):
+    """Raised when a connected room graph cannot be selected."""
 
 
 class CellRole(str, Enum):
@@ -71,6 +77,25 @@ class CandidateConnection:
 class CandidateConnections:
     room_selection: RoomSelection
     connections: tuple[CandidateConnection, ...]
+
+
+@dataclass(frozen=True)
+class SelectedRoomGraph:
+    candidates: CandidateConnections
+    connections: tuple[CandidateConnection, ...]
+    spanning_tree_connections: tuple[CandidateConnection, ...]
+    loop_connections: tuple[CandidateConnection, ...]
+
+    @property
+    def room_selection(self) -> RoomSelection:
+        return self.candidates.room_selection
+
+    @property
+    def loop_connection_pairs(self) -> frozenset[tuple[int, int]]:
+        return frozenset(
+            (connection.room_a_id, connection.room_b_id)
+            for connection in self.loop_connections
+        )
 
 
 def select_rooms(
@@ -213,6 +238,138 @@ def validate_candidate_connections(
                 raise CandidateConnectionError(
                     f"Passage path step {left}->{right} is not adjacent"
                 )
+
+
+def select_room_graph(
+    candidates: CandidateConnections,
+    config: Config,
+    rng: random.Random,
+) -> SelectedRoomGraph:
+    room_ids = sorted(candidates.room_selection.room_cell_ids)
+    if len(room_ids) <= 1:
+        selected = SelectedRoomGraph(
+            candidates=candidates,
+            connections=(),
+            spanning_tree_connections=(),
+            loop_connections=(),
+        )
+        validate_selected_room_graph(selected, config)
+        return selected
+
+    spanning_tree = _randomized_spanning_tree(candidates.connections, room_ids, rng)
+    selected = list(spanning_tree)
+    selected_pairs = {
+        (connection.room_a_id, connection.room_b_id) for connection in spanning_tree
+    }
+
+    for connection in candidates.connections:
+        pair = (connection.room_a_id, connection.room_b_id)
+        if pair in selected_pairs:
+            continue
+        if rng.random() < config.extra_loop_probability:
+            selected.append(connection)
+            selected_pairs.add(pair)
+
+    selected.sort(key=lambda connection: (connection.room_a_id, connection.room_b_id))
+    spanning_pairs = {
+        (connection.room_a_id, connection.room_b_id) for connection in spanning_tree
+    }
+    loop_connections = tuple(
+        connection
+        for connection in selected
+        if (connection.room_a_id, connection.room_b_id) not in spanning_pairs
+    )
+
+    selected_graph = SelectedRoomGraph(
+        candidates=candidates,
+        connections=tuple(selected),
+        spanning_tree_connections=spanning_tree,
+        loop_connections=loop_connections,
+    )
+    validate_selected_room_graph(selected_graph, config)
+    return selected_graph
+
+
+def validate_selected_room_graph(
+    selected: SelectedRoomGraph,
+    config: Config,
+) -> None:
+    room_ids = sorted(selected.room_selection.room_cell_ids)
+    candidate_pairs = {
+        (connection.room_a_id, connection.room_b_id)
+        for connection in selected.candidates.connections
+    }
+
+    for connection in selected.connections:
+        pair = (connection.room_a_id, connection.room_b_id)
+        if pair not in candidate_pairs:
+            raise RoomGraphSelectionError(
+                f"Selected connection {pair} is not a candidate"
+            )
+
+    if len(room_ids) <= 1:
+        return
+
+    if len(selected.spanning_tree_connections) != len(room_ids) - 1:
+        raise RoomGraphSelectionError("Selected graph must include a spanning tree")
+
+    graph = nx.Graph()
+    graph.add_nodes_from(room_ids)
+    for connection in selected.connections:
+        graph.add_edge(connection.room_a_id, connection.room_b_id)
+
+    if not nx.is_connected(graph):
+        raise RoomGraphSelectionError("Selected room graph is disconnected")
+
+    tree_graph = nx.Graph()
+    tree_graph.add_nodes_from(room_ids)
+    for connection in selected.spanning_tree_connections:
+        tree_graph.add_edge(connection.room_a_id, connection.room_b_id)
+    if not nx.is_tree(tree_graph):
+        raise RoomGraphSelectionError("Spanning tree connections do not form a tree")
+
+
+def _randomized_spanning_tree(
+    connections: tuple[CandidateConnection, ...],
+    room_ids: list[int],
+    rng: random.Random,
+) -> tuple[CandidateConnection, ...]:
+    if not connections:
+        raise RoomGraphSelectionError("No candidate connections available")
+
+    shuffled = list(connections)
+    rng.shuffle(shuffled)
+
+    parent = {room_id: room_id for room_id in room_ids}
+
+    def find(room_id: int) -> int:
+        while parent[room_id] != room_id:
+            parent[room_id] = parent[parent[room_id]]
+            room_id = parent[room_id]
+        return room_id
+
+    def union(left_id: int, right_id: int) -> bool:
+        left_root = find(left_id)
+        right_root = find(right_id)
+        if left_root == right_root:
+            return False
+        parent[right_root] = left_root
+        return True
+
+    spanning: list[CandidateConnection] = []
+    for connection in shuffled:
+        if union(connection.room_a_id, connection.room_b_id):
+            spanning.append(connection)
+        if len(spanning) == len(room_ids) - 1:
+            break
+
+    if len(spanning) < len(room_ids) - 1:
+        raise RoomGraphSelectionError(
+            "Candidate connections cannot span all selected rooms"
+        )
+
+    spanning.sort(key=lambda connection: (connection.room_a_id, connection.room_b_id))
+    return tuple(spanning)
 
 
 def _shortest_path_through_unused(

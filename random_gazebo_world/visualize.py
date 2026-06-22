@@ -8,7 +8,12 @@ from matplotlib.patches import Rectangle
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.geometry import SharedWall
 from random_gazebo_world.partition import Partition
-from random_gazebo_world.topology import CandidateConnections, ConnectionType, RoomSelection
+from random_gazebo_world.topology import (
+    CandidateConnections,
+    ConnectionType,
+    RoomSelection,
+    SelectedRoomGraph,
+)
 
 
 def _setup_axes(
@@ -284,6 +289,112 @@ def render_candidate_connections(
             marker="o",
             markersize=5,
             zorder=4,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def _draw_room_layout_base(
+    ax: plt.Axes,
+    room_selection: RoomSelection,
+) -> None:
+    for cell in room_selection.unused_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#d9d9d9",
+                edgecolor="#666666",
+                linewidth=1.0,
+                alpha=0.9,
+            )
+        )
+
+    for cell in room_selection.room_cells():
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor="#7bd389",
+                edgecolor="#1f7a3a",
+                linewidth=1.5,
+                alpha=0.9,
+            )
+        )
+        ax.text(
+            cell.x_min + cell.width / 2.0,
+            cell.y_min + cell.height / 2.0,
+            str(cell.id),
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#12351f",
+            weight="bold",
+        )
+
+
+def _draw_connection(
+    ax: plt.Axes,
+    partition: Partition,
+    connection,
+    *,
+    color: str,
+    linewidth: float,
+    linestyle: str,
+) -> None:
+    cells_by_id = {cell.id: cell for cell in partition.cells}
+    if connection.connection_type == ConnectionType.GATE:
+        assert connection.shared_wall is not None
+        start, end = _shared_wall_line(connection.shared_wall)
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color=color,
+            linewidth=linewidth,
+            linestyle=linestyle,
+            solid_capstyle="round",
+            zorder=4,
+        )
+        return
+
+    path_cells = [cells_by_id[cell_id] for cell_id in connection.path_cell_ids]
+    xs, ys = zip(*(_cell_centroid(cell) for cell in path_cells))
+    ax.plot(
+        xs,
+        ys,
+        color=color,
+        linewidth=linewidth,
+        linestyle=linestyle,
+        marker="o",
+        markersize=5,
+        zorder=4,
+    )
+
+
+def render_selected_room_graph(
+    partition: Partition,
+    selected: SelectedRoomGraph,
+    output_base: Path,
+    title: str = "Selected Room Graph",
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 8))
+    _draw_room_layout_base(ax, selected.room_selection)
+
+    loop_pairs = selected.loop_connection_pairs
+    for connection in selected.connections:
+        pair = (connection.room_a_id, connection.room_b_id)
+        is_loop = pair in loop_pairs
+        _draw_connection(
+            ax,
+            partition,
+            connection,
+            color="#ff7f0e" if is_loop else "#1f4e79",
+            linewidth=3.5 if is_loop else 3.0,
+            linestyle="--" if is_loop else "-",
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)
