@@ -24,6 +24,11 @@ from random_gazebo_world.metadata import (
 )
 from random_gazebo_world.openings import OpeningError, OpeningLayout, generate_openings
 from random_gazebo_world.partition import Partition, PartitionError, generate_partition
+from random_gazebo_world.passage_geometry import (
+    PassageGeometryError,
+    PassageGeometryLayout,
+    generate_passage_geometry,
+)
 from random_gazebo_world.rng import create_seeded_rng
 from random_gazebo_world.topology import (
     AppliedLayout,
@@ -49,6 +54,7 @@ from random_gazebo_world.visualize import (
     render_openings,
     render_partition,
     render_passage_cells,
+    render_passage_geometry,
     render_selected_room_graph,
     render_selected_rooms,
     render_wall_segments,
@@ -75,6 +81,7 @@ REQUIRED_DEBUG_STAGES = (
     "08_wall_segments",
     "09_occupancy_map_preview",
     "10_final_floorplan",
+    "11_passage_geometry",
 )
 
 
@@ -93,6 +100,7 @@ RETRYABLE_ERRORS = (
     CandidateConnectionError,
     AppliedLayoutError,
     OpeningError,
+    PassageGeometryError,
     WallGenerationError,
     OccupancyMapError,
     PartitionError,
@@ -109,6 +117,7 @@ class GeneratedWorld:
     selected_graph: SelectedRoomGraph
     applied_layout: AppliedLayout
     opening_layout: OpeningLayout
+    passage_geometry: PassageGeometryLayout
     wall_layout: WallLayout
     occupancy: OccupancyMap
     layout_document: LayoutDocument
@@ -180,6 +189,7 @@ def write_world_outputs(world: GeneratedWorld, out_dir: Path) -> None:
     write_occupancy_map_files(world.occupancy, out_dir)
     export_world_sdf(world.wall_layout, world.config, out_dir / "world.sdf")
     render_final_floorplan(world.wall_layout, debug_dir / "10_final_floorplan")
+    render_passage_geometry(world.wall_layout, debug_dir / "11_passage_geometry")
 
     _validate_output_tree(out_dir)
 
@@ -213,9 +223,12 @@ def _generate_world_attempt(
     applied_layout = apply_connections(selected_graph, adjacency)
     validate_passage_constraints(applied_layout, config)
     opening_layout = generate_openings(applied_layout, config, rng)
-    wall_layout = generate_walls(opening_layout, adjacency, config)
+    passage_geometry = generate_passage_geometry(opening_layout, config)
+    wall_layout = generate_walls(opening_layout, adjacency, config, passage_geometry)
     occupancy = generate_occupancy_map(wall_layout, config, rng)
-    layout_document = build_layout_document(applied_layout, opening_layout, wall_layout)
+    layout_document = build_layout_document(
+        applied_layout, opening_layout, wall_layout, passage_geometry
+    )
 
     return GeneratedWorld(
         config=config,
@@ -226,6 +239,7 @@ def _generate_world_attempt(
         selected_graph=selected_graph,
         applied_layout=applied_layout,
         opening_layout=opening_layout,
+        passage_geometry=passage_geometry,
         wall_layout=wall_layout,
         occupancy=occupancy,
         layout_document=layout_document,

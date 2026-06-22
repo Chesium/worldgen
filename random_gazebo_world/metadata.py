@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from random_gazebo_world.config import Config
-from random_gazebo_world.geometry import Cell, SharedWall
+from random_gazebo_world.geometry import Cell, Rect, SharedWall
 from random_gazebo_world.openings import Opening, OpeningLayout
 from random_gazebo_world.partition import Partition
+from random_gazebo_world.passage_geometry import PassageGeometryLayout
 from random_gazebo_world.topology import (
     AppliedLayout,
     CandidateConnection,
@@ -31,17 +32,22 @@ class LayoutDocument:
     connections: tuple[CandidateConnection, ...]
     openings: tuple[Opening, ...]
     wall_segments: tuple[WallSegment, ...]
+    passage_corridors: tuple[Rect, ...] = ()
+    passage_solids: tuple[Rect, ...] = ()
 
 
 def build_layout_document(
     applied_layout: AppliedLayout,
     opening_layout: OpeningLayout,
     wall_layout: WallLayout,
+    passage_geometry: PassageGeometryLayout | None = None,
 ) -> LayoutDocument:
     cell_roles = tuple(
         (cell.id, applied_layout.role_for(cell.id).value)
         for cell in applied_layout.partition.cells
     )
+    corridors = passage_geometry.corridors if passage_geometry is not None else ()
+    solids = passage_geometry.solids if passage_geometry is not None else ()
     return LayoutDocument(
         partition=applied_layout.partition,
         cell_roles=cell_roles,
@@ -50,6 +56,8 @@ def build_layout_document(
         connections=applied_layout.selected_graph.connections,
         openings=opening_layout.openings,
         wall_segments=wall_layout.segments,
+        passage_corridors=corridors,
+        passage_solids=solids,
     )
 
 
@@ -84,6 +92,8 @@ def export_metadata_json(
             "connections": len(document.connections),
             "openings": len(document.openings),
             "wall_segments": len(document.wall_segments),
+            "passage_corridors": len(document.passage_corridors),
+            "passage_solids": len(document.passage_solids),
         },
         "generation_stats": {
             "gate_connections": sum(
@@ -140,6 +150,8 @@ def layout_document_to_dict(document: LayoutDocument) -> dict[str, Any]:
         "wall_segments": [
             wall_segment_to_dict(segment) for segment in document.wall_segments
         ],
+        "passage_corridors": [rect_to_dict(rect) for rect in document.passage_corridors],
+        "passage_solids": [rect_to_dict(rect) for rect in document.passage_solids],
     }
 
 
@@ -183,6 +195,12 @@ def layout_document_from_dict(payload: dict[str, Any]) -> LayoutDocument:
         openings=tuple(opening_from_dict(item) for item in payload.get("openings", [])),
         wall_segments=tuple(
             wall_segment_from_dict(item) for item in payload.get("wall_segments", [])
+        ),
+        passage_corridors=tuple(
+            rect_from_dict(item) for item in payload.get("passage_corridors", [])
+        ),
+        passage_solids=tuple(
+            rect_from_dict(item) for item in payload.get("passage_solids", [])
         ),
     )
 
@@ -247,6 +265,24 @@ def opening_from_dict(payload: dict[str, Any]) -> Opening:
         width=float(payload["width"]),
         span_start=float(payload["span_start"]),
         span_end=float(payload["span_end"]),
+    )
+
+
+def rect_to_dict(rect: Rect) -> dict[str, Any]:
+    return {
+        "x_min": rect.x_min,
+        "y_min": rect.y_min,
+        "x_max": rect.x_max,
+        "y_max": rect.y_max,
+    }
+
+
+def rect_from_dict(payload: dict[str, Any]) -> Rect:
+    return Rect(
+        x_min=float(payload["x_min"]),
+        y_min=float(payload["y_min"]),
+        x_max=float(payload["x_max"]),
+        y_max=float(payload["y_max"]),
     )
 
 

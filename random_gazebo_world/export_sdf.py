@@ -6,6 +6,7 @@ from pathlib import Path
 from xml.dom import minidom
 
 from random_gazebo_world.config import Config
+from random_gazebo_world.geometry import Rect
 from random_gazebo_world.walls import WallLayout, WallSegment
 
 
@@ -29,15 +30,44 @@ def export_world_sdf(
     config: Config,
     output_path: Path,
 ) -> Path:
-    boxes = [
-        wall_segment_to_box(segment, config.wall_height, config.wall_thickness, index)
-        for index, segment in enumerate(wall_layout.segments)
-    ]
+    boxes = _all_boxes(wall_layout, config)
     tree = _build_sdf_tree(boxes)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _write_pretty_xml(tree, output_path)
     validate_world_sdf(output_path, wall_layout, config)
     return output_path
+
+
+def _passage_solids(wall_layout: WallLayout) -> tuple[Rect, ...]:
+    if wall_layout.passage_geometry is None:
+        return ()
+    return wall_layout.passage_geometry.solids
+
+
+def _all_boxes(wall_layout: WallLayout, config: Config) -> list[WallBox]:
+    boxes = [
+        wall_segment_to_box(segment, config.wall_height, config.wall_thickness, index)
+        for index, segment in enumerate(wall_layout.segments)
+    ]
+    offset = len(boxes)
+    boxes.extend(
+        rect_to_box(rect, config.wall_height, offset + index)
+        for index, rect in enumerate(_passage_solids(wall_layout))
+    )
+    return boxes
+
+
+def rect_to_box(rect: Rect, wall_height: float, index: int) -> WallBox:
+    center_x, center_y = rect.center
+    return WallBox(
+        name=f"wall_{index}",
+        center_x=center_x,
+        center_y=center_y,
+        center_z=wall_height / 2.0,
+        size_x=rect.width,
+        size_y=rect.height,
+        size_z=wall_height,
+    )
 
 
 def wall_segment_to_box(
@@ -100,17 +130,15 @@ def validate_world_sdf(
 
     collisions = link.findall("collision")
     visuals = link.findall("visual")
-    expected = len(wall_layout.segments)
+    expected_boxes = _all_boxes(wall_layout, config)
+    expected = len(expected_boxes)
     if len(collisions) != expected or len(visuals) != expected:
         raise SdfExportError(
             f"Expected {expected} wall collision/visual pairs, got "
             f"{len(collisions)}/{len(visuals)}"
         )
 
-    for index, segment in enumerate(wall_layout.segments):
-        expected_box = wall_segment_to_box(
-            segment, config.wall_height, config.wall_thickness, index
-        )
+    for index, expected_box in enumerate(expected_boxes):
         collision = collisions[index]
         pose = collision.find("pose")
         size = collision.find("./geometry/box/size")

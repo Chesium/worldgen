@@ -522,6 +522,82 @@ def render_openings(
     _save_figure(fig, output_base)
 
 
+def render_passage_geometry(
+    wall_layout: WallLayout,
+    output_base: Path,
+    title: str = "Passage Geometry",
+) -> None:
+    layout = wall_layout.opening_layout.applied_layout
+    partition = layout.partition
+    passage_geometry = wall_layout.passage_geometry
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    for cell in partition.cells:
+        role = layout.role_for(cell.id)
+        if role.value == "room":
+            facecolor = "#eef8f0"
+        elif role.value == "passage":
+            facecolor = "#fbeeee"
+        else:
+            facecolor = "#f5f5f5"
+
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor=facecolor,
+                edgecolor="#cccccc",
+                linewidth=0.5,
+                alpha=0.9,
+            )
+        )
+
+    if passage_geometry is not None:
+        for cell_geometry in passage_geometry.cells:
+            for rect in cell_geometry.solids:
+                ax.add_patch(
+                    Rectangle(
+                        (rect.x_min, rect.y_min),
+                        rect.width,
+                        rect.height,
+                        facecolor="#444444",
+                        edgecolor="#222222",
+                        linewidth=0.5,
+                        alpha=0.85,
+                        zorder=3,
+                    )
+                )
+            for rect in cell_geometry.corridor:
+                ax.add_patch(
+                    Rectangle(
+                        (rect.x_min, rect.y_min),
+                        rect.width,
+                        rect.height,
+                        facecolor="#8ecae6",
+                        edgecolor="#219ebc",
+                        linewidth=0.5,
+                        alpha=0.95,
+                        zorder=4,
+                    )
+                )
+
+    for segment in wall_layout.segments:
+        start, end = wall_segment_line(segment)
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color="#111111",
+            linewidth=2.0,
+            solid_capstyle="butt",
+            zorder=5,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
 def render_wall_segments(
     wall_layout: WallLayout,
     output_base: Path,
@@ -576,6 +652,7 @@ def render_final_floorplan(
     opening_layout = wall_layout.opening_layout
     layout = opening_layout.applied_layout
     partition = layout.partition
+    passage_geometry = wall_layout.passage_geometry
     cells_by_id = {cell.id: cell for cell in partition.cells}
     fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -586,8 +663,8 @@ def render_final_floorplan(
             edgecolor = "#1f7a3a"
             label = str(cell.id)
         elif role.value == "passage":
-            facecolor = "#8ecae6"
-            edgecolor = "#219ebc"
+            facecolor = "#ececec" if passage_geometry is not None else "#8ecae6"
+            edgecolor = "#aaaaaa" if passage_geometry is not None else "#219ebc"
             label = str(cell.id)
         else:
             facecolor = "#ececec"
@@ -616,6 +693,21 @@ def render_final_floorplan(
                 color="#12351f",
                 weight="bold",
             )
+
+    if passage_geometry is not None:
+        for cell_geometry in passage_geometry.cells:
+            for rect in cell_geometry.corridor:
+                ax.add_patch(
+                    Rectangle(
+                        (rect.x_min, rect.y_min),
+                        rect.width,
+                        rect.height,
+                        facecolor="#8ecae6",
+                        edgecolor="none",
+                        alpha=0.95,
+                        zorder=2,
+                    )
+                )
 
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)

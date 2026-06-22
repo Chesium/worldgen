@@ -14,5 +14,5 @@ max_openings_per_passage_edge: 1
 max_open_edges_per_passage: 4
 extra_loop_probability: 0.2
 map_resolution: 0.05
-random_seed: 42
+random_seed: 10667
 max_attempts: 100000

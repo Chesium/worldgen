@@ -53,6 +53,35 @@ class Cell:
 
 
 @dataclass(frozen=True)
+class Rect:
+    """Axis-aligned rectangle without identity or positive-area assertions."""
+
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+
+    @property
+    def width(self) -> float:
+        return self.x_max - self.x_min
+
+    @property
+    def height(self) -> float:
+        return self.y_max - self.y_min
+
+    @property
+    def area(self) -> float:
+        return self.width * self.height
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return (
+            (self.x_min + self.x_max) / 2.0,
+            (self.y_min + self.y_max) / 2.0,
+        )
+
+
+@dataclass(frozen=True)
 class SharedWall:
     """Wall segment shared by two adjacent cells."""
 

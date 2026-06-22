@@ -7,6 +7,7 @@ from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.config import Config
 from random_gazebo_world.geometry import EPS, SharedWall
 from random_gazebo_world.openings import Opening, OpeningLayout
+from random_gazebo_world.passage_geometry import PassageGeometryLayout
 from random_gazebo_world.topology import CellRole
 
 
@@ -30,12 +31,14 @@ class WallSegment:
 class WallLayout:
     opening_layout: OpeningLayout
     segments: tuple[WallSegment, ...]
+    passage_geometry: PassageGeometryLayout | None = None
 
 
 def generate_walls(
     opening_layout: OpeningLayout,
     adjacency: AdjacencyGraph,
     config: Config,
+    passage_geometry: PassageGeometryLayout | None = None,
 ) -> WallLayout:
     layout = opening_layout.applied_layout
     openings_by_pair = _group_openings_by_cell_pair(opening_layout.openings)
@@ -73,6 +76,7 @@ def generate_walls(
     wall_layout = WallLayout(
         opening_layout=opening_layout,
         segments=tuple(segments),
+        passage_geometry=passage_geometry,
     )
     validate_wall_layout(wall_layout, config)
     return wall_layout

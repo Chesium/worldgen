@@ -14,6 +14,7 @@ from random_gazebo_world.geometry import Cell
 from random_gazebo_world.metadata import build_layout_document, load_layout_json
 from random_gazebo_world.openings import OpeningLayout
 from random_gazebo_world.partition import Partition
+from random_gazebo_world.passage_geometry import PassageGeometryLayout
 from random_gazebo_world.pipeline import (
     REQUIRED_DEBUG_STAGES,
     REQUIRED_OUTPUTS,
@@ -79,7 +80,12 @@ def _broken_world() -> GeneratedWorld:
         logical_openings=(),
     )
     opening_layout = OpeningLayout(applied_layout=applied, openings=())
-    wall_layout = WallLayout(opening_layout=opening_layout, segments=())
+    passage_geometry = PassageGeometryLayout(opening_layout=opening_layout, cells=())
+    wall_layout = WallLayout(
+        opening_layout=opening_layout,
+        segments=(),
+        passage_geometry=passage_geometry,
+    )
     occupancy = OccupancyMap(
         data=np.full((1, 1), 254, dtype=np.uint8),
         resolution=0.05,
@@ -99,6 +105,7 @@ def _broken_world() -> GeneratedWorld:
         selected_graph=selected,
         applied_layout=applied,
         opening_layout=opening_layout,
+        passage_geometry=passage_geometry,
         wall_layout=wall_layout,
         occupancy=occupancy,
         layout_document=build_layout_document(applied, opening_layout, wall_layout),

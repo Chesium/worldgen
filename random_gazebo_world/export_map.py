@@ -80,10 +80,26 @@ def generate_occupancy_map(
     height = max(1, math.ceil(partition.world_height / resolution))
     grid = np.full((height, width), OCCUPIED_VALUE, dtype=np.uint8)
 
+    passage_geometry = wall_layout.passage_geometry
     for cell in partition.cells:
         role = layout.role_for(cell.id)
         if role not in {CellRole.ROOM, CellRole.PASSAGE}:
             continue
+
+        if role is CellRole.PASSAGE and passage_geometry is not None:
+            for corridor in passage_geometry.corridor_for(cell.id):
+                _mark_rectangle_free(
+                    grid,
+                    corridor.x_min,
+                    corridor.y_min,
+                    corridor.x_max,
+                    corridor.y_max,
+                    resolution,
+                    origin_x,
+                    origin_y,
+                )
+            continue
+
         _mark_rectangle_free(
             grid,
             cell.x_min,
