@@ -16,6 +16,7 @@ from random_gazebo_world.topology import (
     RoomSelection,
     SelectedRoomGraph,
 )
+from random_gazebo_world.walls import WallLayout, wall_segment_line
 
 
 def _setup_axes(
@@ -514,6 +515,52 @@ def render_openings(
             linewidth=5.0,
             solid_capstyle="round",
             zorder=4,
+        )
+
+    _setup_axes(ax, partition.world_width, partition.world_height, title)
+    fig.tight_layout()
+    _save_figure(fig, output_base)
+
+
+def render_wall_segments(
+    wall_layout: WallLayout,
+    output_base: Path,
+    title: str = "Wall Segments",
+) -> None:
+    layout = wall_layout.opening_layout.applied_layout
+    partition = layout.partition
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    for cell in partition.cells:
+        role = layout.role_for(cell.id)
+        if role.value == "room":
+            facecolor = "#eef8f0"
+        elif role.value == "passage":
+            facecolor = "#eef7fb"
+        else:
+            facecolor = "#f5f5f5"
+
+        ax.add_patch(
+            Rectangle(
+                (cell.x_min, cell.y_min),
+                cell.width,
+                cell.height,
+                facecolor=facecolor,
+                edgecolor="#cccccc",
+                linewidth=0.5,
+                alpha=0.9,
+            )
+        )
+
+    for segment in wall_layout.segments:
+        start, end = wall_segment_line(segment)
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            color="#111111",
+            linewidth=3.0,
+            solid_capstyle="butt",
+            zorder=5,
         )
 
     _setup_axes(ax, partition.world_width, partition.world_height, title)

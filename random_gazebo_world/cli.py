@@ -9,6 +9,7 @@ from random_gazebo_world.config import Config, load_config
 from random_gazebo_world.partition import generate_partition
 from random_gazebo_world.rng import create_seeded_rng
 from random_gazebo_world.openings import generate_openings
+from random_gazebo_world.walls import generate_walls
 from random_gazebo_world.topology import (
     apply_connections,
     generate_candidate_connections,
@@ -23,6 +24,7 @@ from random_gazebo_world.visualize import (
     render_passage_cells,
     render_selected_room_graph,
     render_selected_rooms,
+    render_wall_segments,
 )
 
 
@@ -68,6 +70,7 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     selected_graph = select_room_graph(candidates, config, rng)
     applied_layout = apply_connections(selected_graph, adjacency)
     opening_layout = generate_openings(applied_layout, config, rng)
+    wall_layout = generate_walls(opening_layout, adjacency, config)
     render_partition(partition, debug_dir / "01_partition")
     render_selected_rooms(partition, room_selection, debug_dir / "02_selected_rooms")
     render_adjacency_graph(partition, adjacency, debug_dir / "03_cell_adjacency_graph")
@@ -84,6 +87,7 @@ def generate_world(config: Config, out_dir: Path) -> random.Random:
     )
     render_passage_cells(applied_layout, debug_dir / "06_passage_cells")
     render_openings(opening_layout, debug_dir / "07_openings")
+    render_wall_segments(wall_layout, debug_dir / "08_wall_segments")
     return rng
 
 
