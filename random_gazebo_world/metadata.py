@@ -34,6 +34,7 @@ class LayoutDocument:
     wall_segments: tuple[WallSegment, ...]
     passage_corridors: tuple[Rect, ...] = ()
     passage_solids: tuple[Rect, ...] = ()
+    unused_solids: tuple[Rect, ...] = ()
 
 
 def build_layout_document(
@@ -58,6 +59,7 @@ def build_layout_document(
         wall_segments=wall_layout.segments,
         passage_corridors=corridors,
         passage_solids=solids,
+        unused_solids=wall_layout.unused_solids,
     )
 
 
@@ -94,6 +96,7 @@ def export_metadata_json(
             "wall_segments": len(document.wall_segments),
             "passage_corridors": len(document.passage_corridors),
             "passage_solids": len(document.passage_solids),
+            "unused_solids": len(document.unused_solids),
         },
         "generation_stats": {
             "gate_connections": sum(
@@ -152,6 +155,7 @@ def layout_document_to_dict(document: LayoutDocument) -> dict[str, Any]:
         ],
         "passage_corridors": [rect_to_dict(rect) for rect in document.passage_corridors],
         "passage_solids": [rect_to_dict(rect) for rect in document.passage_solids],
+        "unused_solids": [rect_to_dict(rect) for rect in document.unused_solids],
     }
 
 
@@ -201,6 +205,9 @@ def layout_document_from_dict(payload: dict[str, Any]) -> LayoutDocument:
         ),
         passage_solids=tuple(
             rect_from_dict(item) for item in payload.get("passage_solids", [])
+        ),
+        unused_solids=tuple(
+            rect_from_dict(item) for item in payload.get("unused_solids", [])
         ),
     )
 

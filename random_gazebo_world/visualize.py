@@ -582,6 +582,20 @@ def render_passage_geometry(
                     )
                 )
 
+    for rect in wall_layout.unused_solids:
+        ax.add_patch(
+            Rectangle(
+                (rect.x_min, rect.y_min),
+                rect.width,
+                rect.height,
+                facecolor="#666666",
+                edgecolor="#333333",
+                linewidth=0.5,
+                alpha=0.9,
+                zorder=3,
+            )
+        )
+
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)
         ax.plot(
@@ -708,6 +722,20 @@ def render_final_floorplan(
                         zorder=2,
                     )
                 )
+
+    for rect in wall_layout.unused_solids:
+        ax.add_patch(
+            Rectangle(
+                (rect.x_min, rect.y_min),
+                rect.width,
+                rect.height,
+                facecolor="#666666",
+                edgecolor="#333333",
+                linewidth=0.5,
+                alpha=0.95,
+                zorder=2,
+            )
+        )
 
     for segment in wall_layout.segments:
         start, end = wall_segment_line(segment)

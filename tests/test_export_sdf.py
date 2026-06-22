@@ -112,8 +112,11 @@ def test_export_world_sdf_matches_all_wall_segments(tmp_path: Path) -> None:
 
     link = ET.parse(sdf_path).getroot().find("world/model/link")
     assert link is not None
-    assert len(link.findall("collision")) == len(wall_layout.segments)
-    assert len(link.findall("visual")) == len(wall_layout.segments)
+    expected = len(wall_layout.segments) + len(wall_layout.unused_solids)
+    if wall_layout.passage_geometry is not None:
+        expected += len(wall_layout.passage_geometry.solids)
+    assert len(link.findall("collision")) == expected
+    assert len(link.findall("visual")) == expected
 
 
 def test_generated_world_sdf_exports(tmp_path: Path) -> None:

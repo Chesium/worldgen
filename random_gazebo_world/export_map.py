@@ -122,6 +122,18 @@ def generate_occupancy_map(
             origin_y,
         )
 
+    for rect in wall_layout.unused_solids:
+        _mark_rectangle_occupied(
+            grid,
+            rect.x_min,
+            rect.y_min,
+            rect.x_max,
+            rect.y_max,
+            resolution,
+            origin_x,
+            origin_y,
+        )
+
     start_cell, goal_cell = _sample_start_goal_cells(
         grid,
         layout,
@@ -199,6 +211,26 @@ def _mark_rectangle_free(
             )
             if x_min - EPS <= world_x <= x_max + EPS and y_min - EPS <= world_y <= y_max + EPS:
                 grid[row, col] = FREE_VALUE
+
+
+def _mark_rectangle_occupied(
+    grid: np.ndarray,
+    x_min: float,
+    y_min: float,
+    x_max: float,
+    y_max: float,
+    resolution: float,
+    origin_x: float,
+    origin_y: float,
+) -> None:
+    height, width = grid.shape
+    for row in range(height):
+        for col in range(width):
+            world_x, world_y = _grid_cell_center(
+                col, row, resolution, origin_x, origin_y, height
+            )
+            if x_min - EPS <= world_x <= x_max + EPS and y_min - EPS <= world_y <= y_max + EPS:
+                grid[row, col] = OCCUPIED_VALUE
 
 
 def _mark_wall_segment_occupied(

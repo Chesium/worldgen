@@ -38,10 +38,12 @@ def export_world_sdf(
     return output_path
 
 
-def _passage_solids(wall_layout: WallLayout) -> tuple[Rect, ...]:
-    if wall_layout.passage_geometry is None:
-        return ()
-    return wall_layout.passage_geometry.solids
+def _solid_rects(wall_layout: WallLayout) -> tuple[Rect, ...]:
+    rects: list[Rect] = []
+    if wall_layout.passage_geometry is not None:
+        rects.extend(wall_layout.passage_geometry.solids)
+    rects.extend(wall_layout.unused_solids)
+    return tuple(rects)
 
 
 def _all_boxes(wall_layout: WallLayout, config: Config) -> list[WallBox]:
@@ -52,7 +54,7 @@ def _all_boxes(wall_layout: WallLayout, config: Config) -> list[WallBox]:
     offset = len(boxes)
     boxes.extend(
         rect_to_box(rect, config.wall_height, offset + index)
-        for index, rect in enumerate(_passage_solids(wall_layout))
+        for index, rect in enumerate(_solid_rects(wall_layout))
     )
     return boxes
 

@@ -7,12 +7,14 @@ import pytest
 from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config
 from random_gazebo_world.geometry import Cell
-from random_gazebo_world.openings import generate_openings
+from random_gazebo_world.openings import OpeningLayout, generate_openings
 from random_gazebo_world.partition import Partition, generate_partition
 from random_gazebo_world.rng import create_seeded_rng
 from random_gazebo_world.topology import (
+    CandidateConnections,
     CellRole,
     RoomSelection,
+    SelectedRoomGraph,
     apply_connections,
     generate_candidate_connections,
     select_room_graph,
@@ -92,8 +94,37 @@ def test_wall_segments_do_not_overlap_openings() -> None:
 def test_passage_passage_boundary_skips_interior_wall() -> None:
     assert not _should_generate_interior_wall(CellRole.PASSAGE, CellRole.PASSAGE)
     assert _should_generate_interior_wall(CellRole.ROOM, CellRole.ROOM)
-    assert _should_generate_interior_wall(CellRole.ROOM, CellRole.UNUSED)
+    assert not _should_generate_interior_wall(CellRole.ROOM, CellRole.UNUSED)
+    assert not _should_generate_interior_wall(CellRole.UNUSED, CellRole.UNUSED)
     assert _should_generate_interior_wall(CellRole.ROOM, CellRole.PASSAGE)
+
+
+def test_unused_cells_produce_solid_fill_not_walls() -> None:
+    config = _sample_config(min_room_count=2, max_room_count=2)
+    partition = _grid_partition()
+    adjacency = build_adjacency_graph(partition)
+    selection = RoomSelection(partition=partition, room_cell_ids=frozenset({0, 1}))
+    candidates = CandidateConnections(room_selection=selection, connections=())
+    selected = SelectedRoomGraph(
+        candidates=candidates,
+        connections=(),
+        spanning_tree_connections=(),
+        loop_connections=(),
+    )
+    applied = apply_connections(selected, adjacency)
+    opening_layout = OpeningLayout(applied_layout=applied, openings=())
+    wall_layout = generate_walls(opening_layout, adjacency, config)
+
+    unused_ids = {
+        cell.id
+        for cell in partition.cells
+        if applied.role_for(cell.id) is CellRole.UNUSED
+    }
+    assert unused_ids == {2, 3}
+    assert len(wall_layout.unused_solids) == 2
+    for rect in wall_layout.unused_solids:
+        assert rect.width > 0
+        assert rect.height > 0
 
 
 def test_gate_opening_splits_shared_wall() -> None:

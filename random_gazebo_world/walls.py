@@ -5,7 +5,7 @@ from typing import Literal
 
 from random_gazebo_world.adjacency import AdjacencyGraph
 from random_gazebo_world.config import Config
-from random_gazebo_world.geometry import EPS, SharedWall
+from random_gazebo_world.geometry import EPS, Rect, SharedWall
 from random_gazebo_world.openings import Opening, OpeningLayout
 from random_gazebo_world.passage_geometry import PassageGeometryLayout
 from random_gazebo_world.topology import CellRole
@@ -32,6 +32,7 @@ class WallLayout:
     opening_layout: OpeningLayout
     segments: tuple[WallSegment, ...]
     passage_geometry: PassageGeometryLayout | None = None
+    unused_solids: tuple[Rect, ...] = ()
 
 
 def generate_walls(
@@ -64,6 +65,8 @@ def generate_walls(
         )
 
     for cell in layout.partition.cells:
+        if layout.role_for(cell.id) == CellRole.UNUSED:
+            continue
         segments.extend(
             _exterior_wall_segments(
                 cell,
@@ -73,10 +76,13 @@ def generate_walls(
             )
         )
 
+    unused_solids = _unused_cell_solids(layout)
+
     wall_layout = WallLayout(
         opening_layout=opening_layout,
         segments=tuple(segments),
         passage_geometry=passage_geometry,
+        unused_solids=unused_solids,
     )
     validate_wall_layout(wall_layout, config)
     return wall_layout
@@ -115,9 +121,19 @@ def wall_segment_line(
 
 
 def _should_generate_interior_wall(role_left: CellRole, role_right: CellRole) -> bool:
+    if role_left == CellRole.UNUSED or role_right == CellRole.UNUSED:
+        return False
     if role_left == CellRole.PASSAGE and role_right == CellRole.PASSAGE:
         return False
     return True
+
+
+def _unused_cell_solids(layout) -> tuple[Rect, ...]:
+    return tuple(
+        Rect(cell.x_min, cell.y_min, cell.x_max, cell.y_max)
+        for cell in layout.partition.cells
+        if layout.role_for(cell.id) == CellRole.UNUSED
+    )
 
 
 def _group_openings_by_cell_pair(
