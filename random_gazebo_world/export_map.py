@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from collections import deque
 from dataclasses import dataclass
@@ -68,6 +69,54 @@ def write_occupancy_map_files(occupancy: OccupancyMap, output_dir: Path) -> None
     validate_occupancy_map(occupancy)
 
 
+def cell_to_world(
+    cell: tuple[int, int], occupancy: OccupancyMap
+) -> tuple[float, float]:
+    """Convert an occupancy (row, col) cell to a world-frame (x, y) point in metres."""
+    row, col = cell
+    return _grid_cell_center(
+        col,
+        row,
+        occupancy.resolution,
+        occupancy.origin_x,
+        occupancy.origin_y,
+        occupancy.height,
+    )
+
+
+def build_nav_task(occupancy: OccupancyMap) -> dict:
+    """Build a navigation task (start/goal world poses) from a generated map.
+
+    The start and goal cells are guaranteed-free, mutually reachable cells sampled
+    during occupancy map generation, so the returned poses are deterministic for a
+    given seed and always lie in navigable space.
+    """
+    start_x, start_y = cell_to_world(occupancy.start_cell, occupancy)
+    goal_x, goal_y = cell_to_world(occupancy.goal_cell, occupancy)
+    heading = math.atan2(goal_y - start_y, goal_x - start_x)
+    return {
+        "frame_id": "map",
+        "start": {"x": start_x, "y": start_y, "yaw": heading},
+        "goal": {"x": goal_x, "y": goal_y, "yaw": heading},
+        "map": {
+            "resolution": occupancy.resolution,
+            "origin": [occupancy.origin_x, occupancy.origin_y, 0.0],
+            "width": occupancy.width,
+            "height": occupancy.height,
+        },
+    }
+
+
+def export_nav_task_json(path: Path, occupancy: OccupancyMap) -> dict:
+    """Write the navigation task (start/goal poses) to ``nav_task.json``."""
+    task = build_nav_task(occupancy)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(task, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return task
+
+
 def generate_occupancy_map(
     wall_layout: WallLayout,
     config: Config,
@@ -108,7 +157,14 @@ def generate_occupancy_map(
         free_geom = unary_union(free_geometries)
         grid[contains_xy(free_geom, grid_x, grid_y)] = FREE_VALUE
 
+    # "Solid" fill polygons (unused Voronoi cells and passage solids) are real
+    # obstacles. The demo's augment_world step rasterizes them into collision +
+    # visual boxes so they actually collide AND are seen by the lidar in Gazebo,
+    # keeping the occupancy map consistent with the simulator. Mark them occupied
+    # here together with the wall-segment boxes.
     occupied_geometries: list[BaseGeometry] = list(wall_layout.unused_solids)
+    if wall_layout.passage_geometry is not None:
+        occupied_geometries.extend(wall_layout.passage_geometry.solids)
     half_thickness = config.wall_thickness / 2.0
     for segment in wall_layout.segments:
         occupied_geometries.append(_segment_polygon(segment, half_thickness))
@@ -293,23 +349,154 @@ def _sample_start_goal_cells(
             raise OccupancyMapError("Not enough free cells to sample start and goal")
         return free_cells[0], free_cells[-1]
 
-    first_room = room_ids[0]
-    second_room = room_ids[-1]
-    first_cells = _free_cells_for_room(
-        grid, layout, first_room, resolution, origin_x, origin_y
-    )
-    second_cells = _free_cells_for_room(
-        grid, layout, second_room, resolution, origin_x, origin_y
-    )
+    # Pick the most interior (highest obstacle clearance) cell of each room so the
+    # spawn and goal sit well clear of walls and stay reachable once Nav2 inflates
+    # the costmap. Selection is fully deterministic for reproducibility.
+    clearance = _obstacle_clearance(grid)
 
-    if not first_cells or not second_cells:
+    def _most_clear(cells: list[tuple[int, int]]) -> tuple[int, int]:
+        return max(cells, key=lambda rc: (clearance[rc[0], rc[1]], -rc[0], -rc[1]))
+
+    room_centers: list[tuple[int, int]] = []
+    for room_id in room_ids:
+        cells = _free_cells_for_room(
+            grid, layout, room_id, resolution, origin_x, origin_y
+        )
+        if cells:
+            room_centers.append(_most_clear(cells))
+
+    if len(room_centers) < 2:
         raise OccupancyMapError("Could not find free cells in selected rooms")
 
-    start = rng.choice(first_cells)
-    goal = rng.choice(second_cells)
-    if start == goal and len(second_cells) > 1:
-        goal = rng.choice([cell for cell in second_cells if cell != start])
-    return start, goal
+    return _pick_start_goal_pair(grid, room_centers, resolution)
+
+
+def _obstacle_clearance(grid: np.ndarray) -> np.ndarray:
+    """Distance (in cells) from each free cell to the nearest non-free cell."""
+    from scipy.ndimage import distance_transform_edt
+
+    return distance_transform_edt(grid == FREE_VALUE)
+
+
+def _pick_start_goal_pair(
+    grid: np.ndarray,
+    candidates: list[tuple[int, int]],
+    resolution: float,
+    *,
+    max_detour_ratio: float = 2.2,
+    clearance_cells: int = 10,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Choose a start/goal pair that is far apart yet connected by a direct route.
+
+    The goal is a navigation task that is *meaningful* (large straight-line
+    separation) but not a degenerate maze: among all candidate room centers we
+    prefer the most-separated pair whose shortest navigable path stays within
+    ``max_detour_ratio`` of the straight-line distance. If no pair satisfies the
+    detour bound we fall back to the most direct reachable pair, and finally to
+    the most-separated pair regardless of routing.
+    """
+    from scipy.ndimage import binary_erosion
+
+    free = grid == FREE_VALUE
+    # Erode by an approximate robot clearance so BFS distances reflect a path a
+    # real footprint can follow rather than threading single-cell gaps.
+    structure = np.ones((2 * clearance_cells + 1, 2 * clearance_cells + 1), bool)
+    navigable = binary_erosion(free, structure=structure)
+    # Keep candidates navigable; if a center eroded away, snap to nearest nav cell.
+    nav_candidates = [_nearest_navigable(navigable, c) for c in candidates]
+
+    best_feasible: tuple[float, tuple, tuple] | None = None
+    best_direct: tuple[float, tuple, tuple] | None = None
+    best_any: tuple[float, tuple, tuple] | None = None
+
+    dist_cache: dict[int, np.ndarray] = {}
+    for i in range(len(nav_candidates)):
+        src = nav_candidates[i]
+        if src is None:
+            continue
+        if i not in dist_cache:
+            dist_cache[i] = _bfs_distance(navigable, src)
+        dmap = dist_cache[i]
+        for j in range(i + 1, len(nav_candidates)):
+            dst = nav_candidates[j]
+            if dst is None:
+                continue
+            path_cells = dmap[dst[0], dst[1]]
+            straight = math.hypot(src[0] - dst[0], src[1] - dst[1])
+            if straight <= 0:
+                continue
+            straight_m = straight * resolution
+            if best_any is None or straight_m > best_any[0]:
+                best_any = (straight_m, src, dst)
+            if path_cells < 0:
+                continue
+            detour = (path_cells * resolution) / straight_m
+            if detour <= max_detour_ratio:
+                if best_feasible is None or straight_m > best_feasible[0]:
+                    best_feasible = (straight_m, src, dst)
+            if best_direct is None or detour < best_direct[0]:
+                best_direct = (detour, src, dst)
+
+    chosen = best_feasible or best_direct or best_any
+    if chosen is None:
+        raise OccupancyMapError("Could not find a connected start/goal pair")
+    return chosen[1], chosen[2]
+
+
+def _nearest_navigable(
+    navigable: np.ndarray, cell: tuple[int, int]
+) -> tuple[int, int] | None:
+    """Return ``cell`` if navigable, else the closest navigable cell via BFS."""
+    if navigable[cell[0], cell[1]]:
+        return cell
+    height, width = navigable.shape
+    seen = np.zeros_like(navigable, dtype=bool)
+    queue = deque([cell])
+    seen[cell[0], cell[1]] = True
+    while queue:
+        row, col = queue.popleft()
+        for d_row, d_col in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n_row, n_col = row + d_row, col + d_col
+            if 0 <= n_row < height and 0 <= n_col < width and not seen[n_row, n_col]:
+                if navigable[n_row, n_col]:
+                    return (n_row, n_col)
+                seen[n_row, n_col] = True
+                queue.append((n_row, n_col))
+    return None
+
+
+def _bfs_distance(
+    navigable: np.ndarray, source: tuple[int, int]
+) -> np.ndarray:
+    """8-connected BFS shortest-path distance (in cells) from ``source``."""
+    height, width = navigable.shape
+    dist = np.full((height, width), -1.0)
+    dist[source[0], source[1]] = 0.0
+    queue = deque([source])
+    neighbors = (
+        (1, 0, 1.0),
+        (-1, 0, 1.0),
+        (0, 1, 1.0),
+        (0, -1, 1.0),
+        (1, 1, 1.41421356),
+        (1, -1, 1.41421356),
+        (-1, 1, 1.41421356),
+        (-1, -1, 1.41421356),
+    )
+    while queue:
+        row, col = queue.popleft()
+        base = dist[row, col]
+        for d_row, d_col, step in neighbors:
+            n_row, n_col = row + d_row, col + d_col
+            if (
+                0 <= n_row < height
+                and 0 <= n_col < width
+                and navigable[n_row, n_col]
+                and dist[n_row, n_col] < 0
+            ):
+                dist[n_row, n_col] = base + step
+                queue.append((n_row, n_col))
+    return dist
 
 
 def _free_cells_for_room(

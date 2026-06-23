@@ -1,0 +1,32 @@
+# World-generator config tailored for TurtleBot3 Waffle Nav2 benchmarking.
+#
+# The Waffle has a ~0.22 m collision radius (~0.28 m footprint width). Default
+# generator openings (0.5-0.8 m) leave only a few cm of clearance per side, which
+# is impractical for a real planner+controller. These values widen gates and
+# passages and grow the room/cell scale so the robot can reliably traverse the
+# world while still exercising narrow-corridor navigation.
+world_width: 20.0
+world_height: 20.0
+min_cell_size: 5.0
+max_cell_size: 8.0
+min_room_count: 4
+max_room_count: 6
+wall_height: 1.0
+wall_thickness: 0.15
+gate_width_min: 2.0
+gate_width_max: 2.8
+passage_width_min: 2.0
+passage_width_max: 2.8
+max_openings_per_passage_edge: 1
+max_open_edges_per_passage: 4
+extra_loop_probability: 0.2
+map_resolution: 0.05
+random_seed: 10
+max_attempts: 100000
+max_selection_attempts: 64
+ground_thickness: 0.1
+partition_method: voronoi
+voronoi_seed_count: 7
+voronoi_lloyd_iterations: 8
+voronoi_min_cell_area: 6.0
+voronoi_max_cell_area: 90.0

@@ -12,6 +12,7 @@ from random_gazebo_world.config import Config
 from random_gazebo_world.export_map import (
     OccupancyMap,
     OccupancyMapError,
+    export_nav_task_json,
     generate_occupancy_map,
     write_occupancy_map_files,
 )
@@ -68,6 +69,7 @@ REQUIRED_OUTPUTS = (
     "map.yaml",
     "layout.json",
     "metadata.json",
+    "nav_task.json",
 )
 
 REQUIRED_DEBUG_STAGES = (
@@ -163,11 +165,13 @@ def write_world_outputs(world: GeneratedWorld, out_dir: Path) -> None:
     debug_dir.mkdir(parents=True, exist_ok=True)
 
     export_layout_json(out_dir / "layout.json", world.layout_document)
+    nav_task = export_nav_task_json(out_dir / "nav_task.json", world.occupancy)
     export_metadata_json(
         out_dir / "metadata.json",
         world.config,
         world.layout_document,
         world.selected_graph,
+        nav_task=nav_task,
     )
     render_partition(world.partition, debug_dir / "01_partition")
     render_selected_rooms(

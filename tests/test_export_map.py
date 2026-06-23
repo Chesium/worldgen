@@ -7,6 +7,9 @@ import yaml
 from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config
 from random_gazebo_world.export_map import (
+    build_nav_task,
+    cell_to_world,
+    export_nav_task_json,
     export_occupancy_map,
     generate_occupancy_map,
     validate_occupancy_map,
@@ -112,6 +115,40 @@ def test_map_yaml_matches_geometry(tmp_path: Path) -> None:
     assert payload["resolution"] == 0.1
     assert payload["origin"] == [0.0, 0.0, 0.0]
     assert payload["image"] == "map.png"
+
+
+def test_nav_task_poses_are_in_free_space_and_deterministic() -> None:
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1, 3}, config, 42)
+    occupancy = generate_occupancy_map(wall_layout, config, create_seeded_rng(11))
+
+    task = build_nav_task(occupancy)
+    start_x, start_y = cell_to_world(occupancy.start_cell, occupancy)
+    goal_x, goal_y = cell_to_world(occupancy.goal_cell, occupancy)
+
+    assert task["frame_id"] == "map"
+    assert task["start"]["x"] == start_x
+    assert task["start"]["y"] == start_y
+    assert task["goal"]["x"] == goal_x
+    assert task["goal"]["y"] == goal_y
+    assert 0.0 <= start_x <= occupancy.world_width
+    assert 0.0 <= start_y <= occupancy.world_height
+    assert 0.0 <= goal_x <= occupancy.world_width
+    assert 0.0 <= goal_y <= occupancy.world_height
+    assert (start_x, start_y) != (goal_x, goal_y)
+
+
+def test_export_nav_task_json_round_trips(tmp_path: Path) -> None:
+    import json
+
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1, 3}, config, 42)
+    occupancy = generate_occupancy_map(wall_layout, config, create_seeded_rng(11))
+
+    task = export_nav_task_json(tmp_path / "nav_task.json", occupancy)
+    with (tmp_path / "nav_task.json").open(encoding="utf-8") as handle:
+        loaded = json.load(handle)
+    assert loaded == task
 
 
 def test_generated_world_occupancy_map_validates() -> None:

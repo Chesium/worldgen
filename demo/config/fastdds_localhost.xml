@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Fast DDS profile that confines all traffic to the local host (loopback UDP +
+  shared memory), with multicast disabled.
+
+  On this host (WSL2) the loopback device has no MULTICAST flag, so the default
+  multicast discovery never loops back between local processes and Nav2, the
+  Gazebo bridge and the benchmark runner cannot find each other. The demo solves
+  this with two pieces:
+
+    1. A local Fast DDS *discovery server* on 127.0.0.1:11811
+       (started by demo/scripts/ros_env.sh) reached via ROS_DISCOVERY_SERVER.
+    2. This profile, which provides a shared-memory transport plus a UDPv4
+       transport whitelisted to 127.0.0.1, so all participant data stays on the
+       local host. Discovery is unicast to the server (no multicast needed).
+
+  Enabled via:
+      export FASTRTPS_DEFAULT_PROFILES_FILE=<this file>
+      export FASTDDS_DEFAULT_PROFILES_FILE=<this file>
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>shm_local</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>udp_loopback</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <interface>127.0.0.1</interface>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="loopback_only" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm_local</transport_id>
+          <transport_id>udp_loopback</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
+            <locator><udpv4><address>127.0.0.1</address></udpv4></locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

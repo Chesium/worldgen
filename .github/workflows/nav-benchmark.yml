@@ -1,0 +1,99 @@
+name: nav-benchmark
+
+# Navigation CI/CD demo: generate TurtleBot3-tailored worlds, then run a headless
+# Gazebo + Nav2 benchmark sweep and gate the build on the baseline profile
+# reaching every goal without collisions.
+#
+# This is intentionally a reduced sweep so it fits in CI; run the full matrix
+# locally with `uv run python demo/orchestrate.py --profiles full`.
+#
+# NOTE on simulation: headless Gazebo still renders the lidar/camera via ogre2,
+# which needs an OpenGL context. On GPU-less hosted runners we provide one with
+# xvfb + software GL (LIBGL_ALWAYS_SOFTWARE). If a runner cannot render at all,
+# switch the trial backend to Nav2's GPU-free kinematic loopback simulator
+# (`tb3_loopback_simulation.launch.py`) instead of full Gazebo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worlds:
+        description: "Number of worlds to generate"
+        default: "2"
+      profiles:
+        description: "Profile set (curated|full)"
+        default: "curated"
+  pull_request:
+    paths:
+      - "demo/**"
+      - "random_gazebo_world/**"
+      - ".github/workflows/nav-benchmark.yml"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ros:jazzy
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      # Software rendering for headless Gazebo sensors on GPU-less runners.
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ROS 2 Nav2 + Gazebo + TurtleBot3 sim
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ros-jazzy-nav2-bringup \
+            ros-jazzy-nav2-minimal-tb3-sim \
+            ros-jazzy-nav2-simple-commander \
+            ros-jazzy-ros-gz \
+            ros-jazzy-rmw-fastrtps-cpp \
+            xvfb \
+            libgl1-mesa-dri \
+            mesa-utils \
+            curl \
+            ca-certificates
+
+      - name: Install uv
+        run: |
+          set -eux
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync Python dependencies
+        run: uv sync
+
+      - name: Run navigation benchmark
+        shell: bash
+        run: |
+          set -eux
+          source /opt/ros/jazzy/setup.bash
+          # Use a clean DDS domain for CI to avoid clashes.
+          export ROS_DOMAIN_ID=0
+          unset ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT ROS_DISCOVERY_INTERFACE || true
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            uv run python demo/orchestrate.py \
+              --config demo/configs/turtlebot_nav.yaml \
+              --worlds "${{ github.event.inputs.worlds || '2' }}" \
+              --profiles "${{ github.event.inputs.profiles || 'curated' }}" \
+              --out demo/reports \
+              --timeout 90 \
+              --wall-timeout 240
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nav-benchmark-reports
+          path: |
+            demo/reports/results.csv
+            demo/reports/summary.md
+            demo/reports/success_rate.png
+            demo/reports/trials/**
+            demo/reports/profiles/**
+          if-no-files-found: warn

@@ -88,6 +88,7 @@ def export_metadata_json(
     config: Config,
     document: LayoutDocument,
     selected_graph: SelectedRoomGraph,
+    nav_task: dict[str, Any] | None = None,
 ) -> None:
     payload = {
         "seed": config.random_seed,
@@ -118,6 +119,8 @@ def export_metadata_json(
             "spanning_tree_connections": len(selected_graph.spanning_tree_connections),
         },
     }
+    if nav_task is not None:
+        payload["nav_task"] = nav_task
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
