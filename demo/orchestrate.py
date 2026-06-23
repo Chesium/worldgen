@@ -45,6 +45,7 @@ CSV_FIELDS = [
     "is_gate", "result", "passed", "collision", "timed_out", "nav_time_s",
     "wall_time_s", "planned_path_length_m", "distance_traveled_m",
     "min_clearance_m", "n_recoveries", "straight_line_distance_m", "error",
+    "min_distance_to_goal_m", "position_reached",
 ]
 
 
@@ -63,6 +64,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wall-timeout", type=float, default=300.0,
                         help="Max wall-clock seconds the runner waits per trial.")
     parser.add_argument("--collision-threshold", type=float, default=0.16)
+    parser.add_argument("--goal-tolerance", type=float, default=0.35,
+                        help="Position tolerance (m) for benchmark success.")
     parser.add_argument("--launch-timeout", type=float, default=180.0,
                         help="Extra wall seconds (beyond --wall-timeout) before the "
                              "whole trial launch is force-killed.")
@@ -73,11 +76,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Reuse existing generated worlds in <out>/worlds.")
     parser.add_argument("--no-kill-stragglers", action="store_true",
                         help="Do not pkill leftover 'gz sim' processes between trials.")
-    parser.add_argument("--dds", default="server", choices=["server", "off"],
-                        help="'server' starts a local loopback Fast DDS discovery "
+    parser.add_argument("--dds", default="auto",
+                        choices=["auto", "server", "cyclone", "off"],
+                        help="'auto' uses CycloneDDS when the installed Fast-CDR "
+                             "library is ABI-incompatible, otherwise Fast DDS. "
+                             "'server' starts a local loopback Fast DDS discovery "
                              "server and points all trial processes at it (fixes "
                              "hosts where default DDS discovery fails, e.g. WSL2). "
-                             "'off' leaves the host DDS config untouched.")
+                             "'cyclone' selects rmw_cyclonedds_cpp. 'off' leaves "
+                             "the host DDS config untouched.")
     return parser.parse_args(argv)
 
 
@@ -88,11 +95,26 @@ def setup_dds(args: argparse.Namespace) -> subprocess.Popen | None:
     can terminate it on shutdown. Child ``ros2 launch`` processes inherit the
     environment set here.
     """
-    if args.dds == "off":
+    mode = resolve_dds_mode(args.dds)
+    if mode == "off":
         print("[orchestrate] --dds off: using host DDS configuration as-is")
+        return None
+    if mode == "cyclone":
+        os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+        for key in (
+            "ROS_DISCOVERY_SERVER",
+            "ROS_SUPER_CLIENT",
+            "ROS_DISCOVERY_INTERFACE",
+            "ROS_DISCOVERY_PORT",
+            "FASTRTPS_DEFAULT_PROFILES_FILE",
+            "FASTDDS_DEFAULT_PROFILES_FILE",
+        ):
+            os.environ.pop(key, None)
+        print("[orchestrate] using CycloneDDS (rmw_cyclonedds_cpp)")
         return None
 
     profile = _THIS_DIR / "config" / "fastdds_localhost.xml"
+    os.environ.pop("RMW_IMPLEMENTATION", None)
     os.environ.pop("ROS_DISCOVERY_INTERFACE", None)
     os.environ.pop("ROS_DISCOVERY_PORT", None)
     os.environ["ROS_DISCOVERY_SERVER"] = "127.0.0.1:11811"
@@ -121,6 +143,45 @@ def setup_dds(args: argparse.Namespace) -> subprocess.Popen | None:
     return proc
 
 
+def resolve_dds_mode(requested: str) -> str:
+    if requested != "auto":
+        return requested
+    if not _fastcdr_exports_uint_serialize() and _ros_package_available(
+        "rmw_cyclonedds_cpp"
+    ):
+        print(
+            "[orchestrate] Fast-CDR ABI check failed; auto-selecting CycloneDDS"
+        )
+        return "cyclone"
+    return "server"
+
+
+def _fastcdr_exports_uint_serialize() -> bool:
+    lib = Path("/opt/ros") / os.environ.get("ROS_DISTRO", "jazzy") / "lib" / "libfastcdr.so.2"
+    if not lib.is_file():
+        return True
+    try:
+        out = subprocess.run(
+            ["nm", "-D", str(lib)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        ).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True
+    return "_ZN8eprosima7fastcdr3Cdr9serializeEj" in out
+
+
+def _ros_package_available(package: str) -> bool:
+    return subprocess.run(
+        ["ros2", "pkg", "prefix", package],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
 def _port_listening(port: int) -> bool:
     try:
         out = subprocess.run(
@@ -146,18 +207,31 @@ def generate_worlds(args: argparse.Namespace, seeds: list[int]) -> dict[int, Pat
     from random_gazebo_world.pipeline import generate_valid_world, write_world_outputs
 
     worlds_dir = args.out / "worlds"
+    fallback_worlds_dir = _THIS_DIR / "reports" / "worlds"
     worlds_dir.mkdir(parents=True, exist_ok=True)
     config = load_config(args.config)
 
     world_dirs: dict[int, Path] = {}
     for seed in seeds:
         wdir = worlds_dir / f"world_{seed}"
+        if args.skip_generate and not (wdir / "world.sdf").is_file():
+            fallback = fallback_worlds_dir / f"world_{seed}"
+            if fallback != wdir and (fallback / "world.sdf").is_file():
+                print(
+                    "[orchestrate] reusing generated world "
+                    f"seed={seed} from {fallback}"
+                )
+                wdir = fallback
         if not args.skip_generate:
             print(f"[orchestrate] generating world seed={seed} -> {wdir}")
             world = generate_valid_world(config.with_seed(seed))
             write_world_outputs(world, wdir)
             augment_world.augment_world_sdf(
                 wdir / "world.sdf", wdir / "world_nav.sdf"
+            )
+        if not (wdir / "world.sdf").is_file():
+            raise FileNotFoundError(
+                f"Missing generated world for seed {seed}: {wdir / 'world.sdf'}"
             )
         if not (wdir / "world_nav.sdf").is_file():
             augment_world.augment_world_sdf(
@@ -208,6 +282,7 @@ def run_trial(
         f"timeout:={args.timeout}",
         f"wall_timeout:={args.wall_timeout}",
         f"collision_threshold:={args.collision_threshold}",
+        f"goal_tolerance:={args.goal_tolerance}",
         f"headless:={args.headless}",
         "use_rviz:=False",
         f"world_id:={seed}",

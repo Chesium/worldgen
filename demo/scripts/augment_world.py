@@ -27,8 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -56,33 +54,6 @@ _SCENE_BROADCASTER = (
 )
 
 
-# region agent log
-def _debug_log(
-    run_id: str,
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict,
-) -> None:
-    payload = {
-        "sessionId": "fa55d2",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with Path("/home/chesium/worldgen/.cursor/debug-fa55d2.log").open(
-            "a", encoding="utf-8"
-        ) as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
-    except OSError:
-        pass
-# endregion agent log
-
-
 def _make_plugin(
     filename: str, name: str, children: tuple[tuple[str, str], ...]
 ) -> ET.Element:
@@ -108,21 +79,6 @@ def augment_world_sdf(
     world = root.find("world")
     if world is None:
         raise ValueError(f"No <world> element found in {input_path}")
-
-    # region agent log
-    _debug_log(
-        "post-render-fix",
-        "N5",
-        "demo/scripts/augment_world.py:augment_world_sdf",
-        "augmenting world with render engine",
-        {
-            "input_path": str(input_path),
-            "output_path": str(output_path),
-            "render_engine": render_engine,
-            "convert_legacy_polylines": convert_legacy_polylines,
-        },
-    )
-    # endregion agent log
 
     if convert_legacy_polylines:
         _convert_solid_polylines(world, solid_resolution)

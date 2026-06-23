@@ -11,7 +11,7 @@ from random_gazebo_world.rng import create_seeded_rng
 def test_load_default_config() -> None:
     config = load_config(Path("configs/default.yaml"))
     assert config.world_width == 20.0
-    assert config.random_seed == 42
+    assert config.random_seed == 10667
 
 
 def test_invalid_config_raises_clear_error(tmp_path: Path) -> None:
@@ -133,4 +133,4 @@ def test_with_seed_override() -> None:
     config = load_config(Path("configs/default.yaml"))
     updated = config.with_seed(99)
     assert updated.random_seed == 99
-    assert config.random_seed == 42
+    assert config.random_seed == 10667

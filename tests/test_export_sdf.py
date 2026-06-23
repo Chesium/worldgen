@@ -134,6 +134,21 @@ def test_export_world_sdf_is_well_formed_xml(tmp_path: Path) -> None:
     validate_world_sdf(sdf_path, wall_layout, config)
 
 
+def test_export_world_sdf_uses_static_elements(tmp_path: Path) -> None:
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1}, config, 1)
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    world = ET.parse(sdf_path).getroot().find("world")
+    assert world is not None
+    for name in ("ground", "walls"):
+        model = world.find(f"./model[@name='{name}']")
+        assert model is not None
+        assert model.get("static") is None
+        assert model.findtext("static") == "true"
+
+
 def test_export_world_sdf_matches_all_wall_segments(tmp_path: Path) -> None:
     config = _sample_config()
     wall_layout = _build_wall_layout({0, 1, 3}, config, 42)
@@ -293,7 +308,8 @@ def test_export_world_sdf_includes_ground_model(tmp_path: Path) -> None:
     ground_model = next(
         model for model in world.findall("model") if model.get("name") == "ground"
     )
-    assert ground_model.get("static") == "true"
+    assert ground_model.get("static") is None
+    assert ground_model.findtext("static") == "true"
 
     collision_size = ground_model.find("link/collision/geometry/box/size")
     assert collision_size is not None

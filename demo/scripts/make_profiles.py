@@ -250,6 +250,19 @@ def default_base_params() -> Path:
 def render_profile(base: dict, spec: dict) -> dict:
     params = copy.deepcopy(base)
 
+    # The TurtleBot3 Gazebo odometry and AMCL setup use base_footprint as the
+    # moving robot frame. Keeping every Nav2 consumer on that frame avoids
+    # activation races on the optional base_footprint->base_link static TF in
+    # headless CI.
+    params["bt_navigator"]["ros__parameters"]["robot_base_frame"] = "base_footprint"
+    params["behavior_server"]["ros__parameters"]["robot_base_frame"] = "base_footprint"
+    params["local_costmap"]["local_costmap"]["ros__parameters"][
+        "robot_base_frame"
+    ] = "base_footprint"
+    params["global_costmap"]["global_costmap"]["ros__parameters"][
+        "robot_base_frame"
+    ] = "base_footprint"
+
     planner_block = copy.deepcopy(PLANNERS[spec["planner"]])
     params["planner_server"]["ros__parameters"]["GridBased"] = planner_block
 

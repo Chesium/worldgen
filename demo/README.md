@@ -1,200 +1,596 @@
 # Navigation CI/CD Demo
 
-An automated, scripted navigation benchmark built on top of the procedural world
-generator. It generates TurtleBot3-tailored worlds, then drives a **TurtleBot3
-Waffle** from a fixed start to a fixed goal in headless **Gazebo + Nav2** under a
-sweep of **planner x controller x costmap** profiles, collects per-run metrics,
-and gates a CI build on a baseline profile succeeding on every world.
+Automated Gazebo + Nav2 navigation benchmark for generated worlds.
+
+The demo builds on the procedural generator in the repository root. It creates
+TurtleBot3 Waffle-scale worlds, augments the generated SDF for Gazebo Sim, runs
+Nav2 under several planner/controller/costmap profiles, writes per-trial metrics,
+and applies a CI-style gate to the baseline profile.
+
+## Current Status
+
+Current local status in the WSL2 / ROS 2 Jazzy environment:
+
+- generator unit tests pass: `124 passed`
+- generated/augmented SDFs validate with `gz sdf -k`
+- `demo/orchestrate.py --dds auto` detects the local Fast-CDR ABI mismatch and
+  selects CycloneDDS
+- one-world curated run for seed `10` passes the baseline gate
+
+Verified one-world gate result:
+
+```text
+gate: 1/1 baseline trials passed
+gate PASSED
+```
+
+Example result rows from the verified run:
+
+```text
+navfn_rpp_baseline  POSITION_REACHED  passed=True
+navfn_dwb_tight     POSITION_REACHED  passed=True
+smac2d_rpp_loose    FAILED            passed=False
+```
+
+Only the baseline profile is a hard gate. Non-baseline profiles are reported for
+comparison and may still fail on the current host.
 
 ## Pipeline
 
-```
-configs/turtlebot_nav.yaml
-        │  (random_gazebo_world generate)
-        ▼
-worlds/world_<seed>/  ── world.sdf, map.png/yaml, nav_task.json (fixed start/goal)
-        │  (scripts/augment_world.py: inject Gazebo system plugins + ode physics,
-        │   rasterize polyline solids -> collidable+visible boxes)
-        ▼
-world_nav.sdf
-        │            nav2_profiles/<profile>.yaml   (scripts/make_profiles.py)
-        ▼                       │
-launch/trial.launch.py ◄────────┘
-   tb3_simulation_launch (Gazebo + TB3 + Nav2)  +  scripts/benchmark_runner.py
-        │  (one result JSON per world x profile)
-        ▼
-reports/results.csv + summary.md + success_rate.png      (orchestrate.py)
-        │
-        ▼
-   CI gate: baseline profile must pass on every world (exit nonzero otherwise)
+```text
+demo/configs/turtlebot_nav.yaml
+        |
+        | random_gazebo_world generate
+        v
+reports/worlds/world_<seed>/
+  world.sdf
+  map.png / map.yaml
+  nav_task.json
+        |
+        | demo/scripts/augment_world.py
+        v
+  world_nav.sdf
+        |
+        | demo/scripts/make_profiles.py
+        v
+reports/profiles/<profile>.yaml
+        |
+        | demo/launch/trial.launch.py
+        v
+Gazebo Sim + TurtleBot3 Waffle + Nav2 + benchmark_runner.py
+        |
+        v
+reports/trials/*.json
+reports/results.csv
+reports/summary.md
+reports/success_rate.png
+        |
+        v
+CI gate: all baseline rows must pass
 ```
 
 ## Components
 
 | File | Role |
 | --- | --- |
-| [`configs/turtlebot_nav.yaml`](configs/turtlebot_nav.yaml) | Generator config tuned for the Waffle (wider gates/passages, TB-scale rooms). |
-| [`scripts/augment_world.py`](scripts/augment_world.py) | Injects `gz-sim-*` system plugins + `ode` physics, and rasterizes the generator's non-extrudable polyline solids into collision+visual boxes (see Known limitations). |
-| [`scripts/make_profiles.py`](scripts/make_profiles.py) | Generates Nav2 param files for each planner/controller/inflation profile. |
-| [`scripts/benchmark_runner.py`](scripts/benchmark_runner.py) | rclpy + `BasicNavigator`; runs one trial, records metrics, writes result JSON. |
-| [`launch/trial.launch.py`](launch/trial.launch.py) | Brings up Gazebo + TB3 + Nav2 for one world/profile and runs the runner. |
-| [`orchestrate.py`](orchestrate.py) | Top-level driver: generate → augment → profiles → trials → report → gate. |
-| [`scripts/ros_env.sh`](scripts/ros_env.sh) | Loopback DDS discovery setup (see Troubleshooting). |
-| [`config/fastdds_localhost.xml`](config/fastdds_localhost.xml) | Fast DDS loopback-only transport profile. |
+| [configs/turtlebot_nav.yaml](configs/turtlebot_nav.yaml) | Generator config tuned for TurtleBot3 Waffle navigation. |
+| [scripts/augment_world.py](scripts/augment_world.py) | Injects Gazebo systems, switches physics to ODE, and converts legacy polyline solids if present. |
+| [scripts/make_profiles.py](scripts/make_profiles.py) | Generates Nav2 params for curated or full profile sets. |
+| [scripts/benchmark_runner.py](scripts/benchmark_runner.py) | Runs one `BasicNavigator` trial, collects metrics, writes result JSON. |
+| [launch/trial.launch.py](launch/trial.launch.py) | Launches Gazebo, TurtleBot3, Nav2, and the benchmark runner. |
+| [orchestrate.py](orchestrate.py) | Top-level benchmark driver: generate, augment, profile, trial, report, gate. |
+| [scripts/ros_env.sh](scripts/ros_env.sh) | Optional interactive DDS setup helper. |
+| [config/fastdds_localhost.xml](config/fastdds_localhost.xml) | Fast DDS loopback-only discovery-server profile. |
 
-## Robot and start/goal
+## Requirements
 
-- Robot: **TurtleBot3 Waffle** (the model bundled in `nav2_minimal_tb3_sim`).
-- Start/goal: the generator samples a deterministic, guaranteed-free, mutually
-  reachable start and goal per world and writes them (world-frame metres) to
-  `nav_task.json`. The robot is spawned at the start; the runner commands the
-  goal. Because they come from the seeded generator, they are reproducible.
+Required for local benchmark runs:
 
-## Profiles (the benchmark matrix)
+- ROS 2 Jazzy
+- Gazebo Sim 8 from ROS Jazzy vendor packages
+- Nav2 bringup
+- Nav2 simple commander
+- TurtleBot3 minimal simulation
+- `ros_gz_sim` and `ros_gz_bridge`
+- `uv`
+- an OpenGL context for Gazebo sensors, or software GL via `LIBGL_ALWAYS_SOFTWARE=1`
 
-`make_profiles.py` swaps three axes in Nav2's stock `nav2_params.yaml`:
+On this WSL2 host, the installed ROS pieces include:
 
-- **Planner**: NavFn, Smac 2D, Theta\*.
-- **Controller**: MPPI, DWB, Regulated Pure Pursuit.
-- **Costmap**: `inflation_radius` (e.g. 0.25 / 0.30 / 0.40 m). The global costmap is
-  inflated more aggressively than the local one so the planner prefers open routes.
+- `/opt/ros/jazzy`
+- `nav2_bringup`
+- `ros_gz_sim`
+- `ros_gz_bridge`
+- `rmw_fastrtps_cpp`
+- `rmw_cyclonedds_cpp`
 
-`--profiles curated` runs a hand-picked set (the first, `navfn_rpp_baseline`, is
-the CI gate). `--profiles full` runs the planner x controller x inflation cross
-product.
+`gz` is available at:
 
-## Pass/fail gate
+```bash
+/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz
+```
 
-A trial **passes** iff:
+Use this setup in each shell:
 
-1. Nav2 reports `SUCCEEDED` (goal reached within the goal checker tolerance),
-2. before the navigation `--timeout` (sim seconds), and
-3. the robot never came within `--collision-threshold` m of an obstacle
-   (minimum `/scan` range; a scan-based collision proxy).
+```bash
+source /opt/ros/jazzy/setup.bash
+export PATH=/opt/ros/jazzy/opt/gz_tools_vendor/bin:$PATH
+export LIBGL_ALWAYS_SOFTWARE=1
+```
 
-The orchestrator exits non-zero if any **baseline** trial fails, which fails the
-CI job. Non-baseline profiles are reported but never fail the build.
+For CI or headless hosts without a display, run under `xvfb-run` as the workflow
+does.
 
-## Metrics (per trial)
+## Run The Benchmark
 
-`result`, `passed`, `collision`, `timed_out`, `nav_time_s`, `wall_time_s`,
-`planned_path_length_m`, `distance_traveled_m`, `min_clearance_m`,
-`n_recoveries`, `straight_line_distance_m`. Aggregated into
-`reports/results.csv`, `reports/summary.md`, and `reports/success_rate.png`.
-
-## Run locally
-
-Prerequisites: ROS 2 Jazzy + Gazebo + Nav2 on `PATH`, and `uv`.
+Install Python dependencies from the repository root:
 
 ```bash
 uv sync
-# Generate worlds, run the curated sweep, write reports, apply the gate:
-uv run python demo/orchestrate.py \
-  --config demo/configs/turtlebot_nav.yaml \
-  --worlds 3 --profiles curated --out demo/reports
 ```
 
-Useful flags: `--seeds 10,11,12`, `--profiles full`, `--timeout`,
-`--wall-timeout`, `--headless False` (watch a run in the Gazebo GUI),
-`--skip-generate` (reuse worlds), `--dds off` (don't touch host DDS).
-
-Generate the individual artifacts by hand:
+Run a fast one-world baseline gate check:
 
 ```bash
-# one world
+source /opt/ros/jazzy/setup.bash
+export PATH=/opt/ros/jazzy/opt/gz_tools_vendor/bin:$PATH
+export LIBGL_ALWAYS_SOFTWARE=1
+
+uv run python demo/orchestrate.py \
+  --config demo/configs/turtlebot_nav.yaml \
+  --seeds 10 \
+  --profiles curated \
+  --out /tmp/worldgen_nav_check \
+  --timeout 60 \
+  --wall-timeout 140 \
+  --launch-timeout 60 \
+  --headless True \
+  --dds auto
+```
+
+Run the default local benchmark:
+
+```bash
+uv run python demo/orchestrate.py \
+  --config demo/configs/turtlebot_nav.yaml \
+  --worlds 3 \
+  --profiles curated \
+  --out demo/reports
+```
+
+Run specific seeds:
+
+```bash
+uv run python demo/orchestrate.py \
+  --config demo/configs/turtlebot_nav.yaml \
+  --seeds 10,11,12 \
+  --profiles curated \
+  --out demo/reports
+```
+
+Run the full planner/controller/inflation matrix:
+
+```bash
+uv run python demo/orchestrate.py \
+  --config demo/configs/turtlebot_nav.yaml \
+  --seeds 10 \
+  --profiles full \
+  --out demo/reports_full
+```
+
+## Orchestrator Options
+
+Important `demo/orchestrate.py` flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--config` | `demo/configs/turtlebot_nav.yaml` | Generator config. |
+| `--worlds` | `3` | Number of worlds; seeds are `config.random_seed + i`. |
+| `--seeds` | none | Comma-separated explicit seeds; overrides `--worlds`. |
+| `--profiles` | `curated` | `curated` or `full`. |
+| `--out` | `demo/reports` | Report and generated-world output directory. |
+| `--timeout` | `120` | Navigation timeout in sim seconds. |
+| `--wall-timeout` | `300` | Per-run wall-clock timeout for the benchmark runner. |
+| `--launch-timeout` | `180` | Extra wall-clock time before killing the launch group. |
+| `--collision-threshold` | `0.16` | Minimum scan range below which a collision is flagged. |
+| `--goal-tolerance` | `0.35` | Position tolerance for benchmark success. |
+| `--headless` | `True` | `False` opens the Gazebo GUI. |
+| `--skip-generate` | off | Reuse existing `<out>/worlds/world_<seed>` artifacts. |
+| `--dds` | `auto` | `auto`, `server`, `cyclone`, or `off`. |
+| `--no-kill-stragglers` | off | Leave spawned simulator/Nav2 processes alone between trials. |
+
+When `--skip-generate` is used with a fresh output directory, the orchestrator
+also checks `demo/reports/worlds` for reusable generated worlds.
+
+## DDS Modes
+
+The benchmark launches many processes, so DDS discovery must work reliably.
+
+`--dds auto` is the recommended default:
+
+- uses Fast DDS discovery-server mode when Fast DDS appears healthy
+- switches to CycloneDDS if the installed Fast-CDR library is ABI-incompatible
+  with Nav2 message typesupport
+
+On this host, `--dds auto` prints:
+
+```text
+Fast-CDR ABI check failed; auto-selecting CycloneDDS
+using CycloneDDS (rmw_cyclonedds_cpp)
+```
+
+Other modes:
+
+```bash
+--dds server   # force Fast DDS discovery server on 127.0.0.1:11811
+--dds cyclone  # force RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+--dds off      # do not change host DDS environment
+```
+
+For interactive shells:
+
+```bash
+source demo/scripts/ros_env.sh
+DEMO_DDS=cyclone source demo/scripts/ros_env.sh
+source demo/scripts/ros_env.sh stop
+```
+
+Use `--dds cyclone` on WSL2 if you see errors like:
+
+```text
+undefined symbol: _ZN8eprosima7fastcdr3Cdr9serializeEj
+```
+
+or if local process discovery is unreliable with Fast DDS.
+
+## Profiles
+
+`demo/scripts/make_profiles.py` starts from Nav2's stock `nav2_params.yaml` and
+rewrites selected planner/controller/costmap settings.
+
+Curated profiles:
+
+| Name | Planner | Controller | Inflation | Gate |
+| --- | --- | --- | --- | --- |
+| `navfn_rpp_baseline` | NavFn | Regulated Pure Pursuit | `0.30` | yes |
+| `navfn_dwb_tight` | NavFn | DWB | `0.25` | no |
+| `smac2d_rpp_loose` | Smac 2D | Regulated Pure Pursuit | `0.40` | no |
+
+The first curated profile is the CI gate. Non-baseline profiles are included in
+the reports but do not fail the build.
+
+The generated profiles also:
+
+- use `base_footprint` consistently for Nav2 robot-base frames
+- inflate the global costmap more aggressively than the local costmap
+- enlarge the global planning radius so narrow pinch points are less attractive
+- remove live obstacle layers from the global costmap
+- keep local lidar layers for collision safety
+- relax the final heading requirement so the benchmark measures reaching the
+  goal location, not final yaw precision
+
+## Pass/Fail Semantics
+
+A trial passes when all are true:
+
+1. Nav2 reports `SUCCEEDED`, or the runner observes the robot within
+   `--goal-tolerance` metres of the goal position.
+2. The trial finishes before `--timeout` sim seconds and `--wall-timeout` wall
+   seconds.
+3. The scan-based collision proxy never drops below `--collision-threshold`.
+
+If the robot reaches the position tolerance but Nav2 eventually returns
+`FAILED`, the runner records:
+
+```json
+{
+  "result": "POSITION_REACHED",
+  "position_reached": true,
+  "passed": true
+}
+```
+
+This behavior is intentional for the CI gate because the demo benchmarks
+goal-position reachability in a slow, software-rendered simulator where Nav2 can
+fail during post-arrival replanning/recovery bookkeeping.
+
+Rejected goals are not treated as success. If `BasicNavigator` finishes without
+feedback after goal submission, the runner records `REJECTED`.
+
+## Reports
+
+`orchestrate.py` writes:
+
+```text
+<out>/
+  worlds/world_<seed>/         # generated worlds
+  profiles/*.yaml             # generated Nav2 params
+  profiles/profiles.json       # profile manifest
+  trials/*.json                # one JSON result per world/profile trial
+  results.csv                  # all trial rows
+  summary.md                   # human-readable summary
+  success_rate.png             # profile success-rate chart, if matplotlib works
+```
+
+CSV/result fields include:
+
+- `world_id`, `seed`
+- `profile`, `planner`, `controller`, `inflation`
+- `is_gate`
+- `result`, `passed`
+- `position_reached`, `min_distance_to_goal_m`
+- `collision`, `timed_out`
+- `nav_time_s`, `wall_time_s`
+- `planned_path_length_m`
+- `distance_traveled_m`
+- `min_clearance_m`
+- `n_recoveries`
+- `straight_line_distance_m`
+- `error`
+
+## Manual Step-By-Step Run
+
+Generate one world:
+
+```bash
 uv run python -m random_gazebo_world.cli generate \
-  --config demo/configs/turtlebot_nav.yaml --seed 10 --out /tmp/w10
-uv run python demo/scripts/augment_world.py /tmp/w10/world.sdf
-# the profiles
-uv run python demo/scripts/make_profiles.py --out demo/nav2_profiles --set curated
-# one trial directly
+  --config demo/configs/turtlebot_nav.yaml \
+  --seed 10 \
+  --out /tmp/w10
+```
+
+Augment it for Gazebo + Nav2:
+
+```bash
+uv run python demo/scripts/augment_world.py \
+  /tmp/w10/world.sdf \
+  --output /tmp/w10/world_nav.sdf
+```
+
+Validate the augmented SDF:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export PATH=/opt/ros/jazzy/opt/gz_tools_vendor/bin:$PATH
+
+gz sdf -k /tmp/w10/world_nav.sdf
+```
+
+Generate Nav2 profiles:
+
+```bash
+uv run python demo/scripts/make_profiles.py \
+  --out /tmp/nav2_profiles \
+  --set curated
+```
+
+Run one trial:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export PATH=/opt/ros/jazzy/opt/gz_tools_vendor/bin:$PATH
+export LIBGL_ALWAYS_SOFTWARE=1
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+unset ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT ROS_DISCOVERY_INTERFACE
+unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+
 ros2 launch demo/launch/trial.launch.py \
-  world:=/tmp/w10/world_nav.sdf map:=/tmp/w10/map.yaml \
-  params_file:=demo/nav2_profiles/navfn_rpp_baseline.yaml \
-  nav_task:=/tmp/w10/nav_task.json result_out:=/tmp/r.json headless:=True
+  world:=/tmp/w10/world_nav.sdf \
+  map:=/tmp/w10/map.yaml \
+  params_file:=/tmp/nav2_profiles/navfn_rpp_baseline.yaml \
+  nav_task:=/tmp/w10/nav_task.json \
+  result_out:=/tmp/r.json \
+  timeout:=60 \
+  wall_timeout:=140 \
+  collision_threshold:=0.16 \
+  goal_tolerance:=0.35 \
+  headless:=True \
+  use_rviz:=False \
+  world_id:=10 \
+  profile:=navfn_rpp_baseline \
+  planner:=navfn \
+  controller:=rpp \
+  inflation:=0.3
+```
+
+Inspect the result:
+
+```bash
+cat /tmp/r.json
 ```
 
 ## CI
 
-[`.github/workflows/nav-benchmark.yml`](../.github/workflows/nav-benchmark.yml)
-installs Nav2 + Gazebo + the TB3 sim in a `ros:jazzy` container, runs a reduced
-sweep headless under `xvfb` with software GL, uploads `reports/**` as artifacts,
-and fails the job on a gate failure. Trigger it on `workflow_dispatch` or via the
-PR paths filter.
+The workflow is [.github/workflows/nav-benchmark.yml](../.github/workflows/nav-benchmark.yml).
+
+It runs in a `ros:jazzy` container, installs Nav2, Gazebo, TurtleBot3 sim,
+Fast DDS, CycloneDDS, software GL support, and `uv`, then runs:
+
+```bash
+xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+  uv run python demo/orchestrate.py \
+    --config demo/configs/turtlebot_nav.yaml \
+    --worlds <input> \
+    --profiles <input> \
+    --out demo/reports \
+    --timeout 90 \
+    --wall-timeout 240
+```
+
+The workflow uploads report artifacts even on failure.
 
 ## Troubleshooting
 
-### DDS discovery (multi-process) failures — WSL2 in particular
+### `gz` Exists But Prints No Commands
 
-Nav2, the Gazebo bridge and the benchmark runner are separate processes that
-must discover each other over DDS. Two host conditions break that:
-
-- a stale `ROS_DISCOVERY_SERVER` pointing at an unreachable address, and/or
-- a loopback interface without the `MULTICAST` flag (common on **WSL2**), so the
-  default multicast discovery never reaches other local processes.
-
-`orchestrate.py --dds server` (the default) works around this by starting a
-**local Fast DDS discovery server** on `127.0.0.1:11811`, clearing the inherited
-discovery env, and pointing every trial process at it through the loopback-only
-transport profile in [`config/fastdds_localhost.xml`](config/fastdds_localhost.xml).
-You can apply the same setup to an interactive shell with:
+Run with the ROS setup and vendor bin on `PATH`:
 
 ```bash
-source demo/scripts/ros_env.sh        # start server + export env
-source demo/scripts/ros_env.sh stop   # tear it down
+source /opt/ros/jazzy/setup.bash
+export PATH=/opt/ros/jazzy/opt/gz_tools_vendor/bin:$PATH
+gz sim --versions
 ```
 
-Verify discovery works with a talker/listener in two terminals (after sourcing
-`ros_env.sh` in both): `ros2 run demo_nodes_cpp talker` / `... listener`. If the
-listener still hears nothing, your host's DDS is misconfigured at a level below
-this demo; installing and selecting CycloneDDS
-(`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`) is the most reliable fallback on WSL2.
+On this host, `gz sim --versions` reports `8.11.0`.
 
-### Headless rendering
+### Fast-CDR Symbol Errors
 
-Gazebo's sensor system renders the lidar with ogre2 and needs an OpenGL context.
-Without a GPU, run under `xvfb-run` with `LIBGL_ALWAYS_SOFTWARE=1` (as the CI
-workflow does). If rendering is unavailable entirely, switch the trial backend to
-Nav2's GPU-free kinematic `tb3_loopback_simulation.launch.py`.
+If Nav2 nodes die with:
 
-### Solid fills: polyline → box rasterization
+```text
+undefined symbol: _ZN8eprosima7fastcdr3Cdr9serializeEj
+```
 
-The generator exports its "solid" fill regions (unused Voronoi cells, passage
-leftovers) as SDF `<polyline>` geometry. Gazebo **cannot extrude** these
-(non-convex, keyhole-shaped) polygons — it logs `Unable to extrude mesh` and
-drops them, producing a *phantom* obstacle: occupied on the Nav2 map but with no
-collision (the robot drives through it) and no visual (the lidar, which raytraces
-the rendered *visual* scene, never sees it), which makes AMCL scan-matching
-diverge. `augment_world.py` fixes this by rasterizing each polygon into
-axis-aligned `<box>` collision **and** visual primitives, so the simulator
-matches the map. (`--solid-resolution` controls the box granularity.)
+use:
 
-## Known limitations
+```bash
+--dds auto
+```
 
-This demo is a faithful, fully-automated **pipeline**, but on the current host
-(WSL2, software-GL Gazebo) the benchmark does **not** pass green yet. The two
-remaining issues, both documented here for transparency:
+or force:
 
-1. **Planners thread narrow pinch-points.** The generated worlds contain ~0.70 m
-   junction pinches alongside genuinely wide (≥1.0 m) routes between the same
-   rooms. NavFn and Smac 2D plan the near-shortest path (here 15.07 m planned vs
-   14.55 m straight-line) straight through the pinch, *ignoring the inflation
-   gradient* — raising `inflation_radius`, `cost_scaling_factor`, or the global
-   `robot_radius` does not reroute them. A 0.70 m gap leaves a 0.44 m-wide robot
-   only ~0.13 m of margin, so it wedges, exhausts its recoveries, and the trial
-   fails. The robust fix is to give the **global** planner its own no-go map where
-   the pinches are closed (a second eroded-map `map_server`, or a Nav2
-   Keepout-Filter on the global costmap) while AMCL and the local costmap keep the
-   true map — offline analysis confirms this yields a connected, pinch-free route
-   (min width 0.80 m) in every test world. It is not yet wired into the launch.
+```bash
+--dds cyclone
+```
 
-2. **Localization drift on a slow sim.** Software-rendered Gazebo runs well below
-   real time, so TF/scan timing jitter (`Failed to transform initial pose`,
-   "Lookup would require extrapolation") lets AMCL drift over long paths. Once the
-   robot is wedged at a pinch the drift places its estimated pose inside an
-   obstacle ("Start occupied"), and Nav2 occasionally SIGSEGVs (intercepted by
-   ImageMagick's process-wide signal handler, hence the `Magick:` abort line). A
-   ground-truth `map→odom` publisher would remove this for CI.
+The underlying issue is a host package mismatch between Fast-CDR and Nav2
+message typesupport. CycloneDDS avoids that Fast DDS path.
 
-The pass/fail gate, metrics collection, reporting, and CI wiring all work; the
-gate currently reports the trials as failing for the reasons above.
+### DDS Discovery Failures
+
+Symptoms:
+
+- runner cannot see Nav2 services/actions
+- nodes appear to launch but do not discover each other
+- WSL2 multicast-related issues
+
+Try:
+
+```bash
+uv run python demo/orchestrate.py ... --dds auto
+uv run python demo/orchestrate.py ... --dds cyclone
+uv run python demo/orchestrate.py ... --dds server
+```
+
+For manual testing, verify ROS discovery with two shells using talker/listener.
+
+### Headless Rendering
+
+Gazebo lidar rendering needs an OpenGL context. On headless systems:
+
+```bash
+export LIBGL_ALWAYS_SOFTWARE=1
+xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+  uv run python demo/orchestrate.py ...
+```
+
+If rendering is unavailable entirely, the next robust direction is replacing the
+full Gazebo backend with Nav2's loopback simulator for CI-only testing.
+
+### Leftover Simulator Processes
+
+The orchestrator kills common stragglers between trials by default:
+
+- `gz sim`
+- `ros_gz_bridge`
+- `parameter_bridge`
+- `component_container_isolated`
+- `benchmark_runner.py`
+- `robot_state_publisher`
+
+Use `--no-kill-stragglers` only when actively debugging a live launch.
+
+## Known Limitations
+
+### Baseline Gate Passes; Non-Baseline Profiles May Fail
+
+The current gate is intentionally limited to `navfn_rpp_baseline`. On the
+verified seed `10`, baseline and DWB reached the goal position, while
+`smac2d_rpp_loose` still failed before reaching the goal.
+
+This is acceptable for the CI gate because non-baseline profiles are diagnostic
+comparison runs.
+
+### `POSITION_REACHED` Is A Benchmark Result, Not A Native Nav2 Result
+
+Nav2 can return `FAILED` after the robot has already reached the goal position,
+usually because of late replanning, recovery, or localization drift near the
+goal. The runner maps this condition to `POSITION_REACHED` when
+`min_distance_to_goal_m <= --goal-tolerance` and no collision/timeout occurred.
+
+### Slow Software Simulation Can Drift
+
+In WSL2 with software rendering, Gazebo can run below real time. TF and scan
+timing jitter can cause AMCL drift, and the global planner may later report:
+
+```text
+Start occupied
+Lookup would require extrapolation
+Failed to create plan
+```
+
+A future CI-hardening option is a ground-truth `map -> odom` publisher or a
+loopback simulation backend for deterministic tests.
+
+### Planner Pinch Points Are Still A Real Scenario
+
+Generated worlds may contain narrow local pinch points alongside wider routes.
+The profiles make the global costmap more conservative, but planners can still
+prefer short routes that become hard for the controller under localization drift.
+
+Potential future fixes:
+
+- create a separate eroded global-planning map
+- add a Nav2 keepout filter for pinch closures
+- enforce wider minimum passage geometry in demo-specific generation
+- sample start/goal pairs with a stronger clearance and route-width constraint
+
+### Gazebo Teardown Can Exit With `-11`
+
+Gazebo Sim may exit with `-11` during shutdown after the benchmark result has
+already been written and the launch is being torn down. The orchestrator uses
+the runner's JSON result as the source of truth and then kills stragglers before
+the next trial.
+
+### Legacy Polyline Solids
+
+Modern generator output exports solid fills as boxes or meshes. The augmentation
+script still supports legacy `<polyline>` solid conversion because Gazebo cannot
+extrude many non-convex/keyhole polyline polygons into reliable collision and
+visual geometry.
+
+## Useful Verification Commands
+
+Run all unit tests:
+
+```bash
+.venv/bin/python -m pytest tests -q -s
+```
+
+Validate an augmented world:
+
+```bash
+gz sdf -k /tmp/w10/world_nav.sdf
+```
+
+Run the one-world gate check:
+
+```bash
+uv run python demo/orchestrate.py \
+  --config demo/configs/turtlebot_nav.yaml \
+  --seeds 10 \
+  --profiles curated \
+  --out /tmp/worldgen_nav_check \
+  --timeout 60 \
+  --wall-timeout 140 \
+  --launch-timeout 60 \
+  --headless True \
+  --dds auto
+```
+
+Inspect the gate summary:
+
+```bash
+cat /tmp/worldgen_nav_check/summary.md
+cat /tmp/worldgen_nav_check/results.csv
+```

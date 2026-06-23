@@ -16,7 +16,10 @@
 #   source demo/scripts/ros_env.sh        # set up + start server
 #   source demo/scripts/ros_env.sh stop   # stop the local discovery server
 #
-# Disable entirely (use the host's normal DDS) with: export DEMO_DDS=off
+# Modes:
+#   export DEMO_DDS=server   # default: Fast DDS discovery server on loopback
+#   export DEMO_DDS=cyclone  # use CycloneDDS, useful if Fast-DDS/Fast-CDR ABI is broken
+#   export DEMO_DDS=off      # leave the host's normal DDS config untouched
 
 _DEMO_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 _DEMO_DIR="$(cd "${_DEMO_SCRIPTS_DIR}/.." && pwd)"
@@ -43,7 +46,17 @@ if [[ "${DEMO_DDS:-server}" == "off" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+if [[ "${DEMO_DDS:-server}" == "cyclone" ]]; then
+  demo_dds_stop
+  unset ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT ROS_DISCOVERY_INTERFACE ROS_DISCOVERY_PORT
+  unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  echo "[ros_env] using CycloneDDS (${RMW_IMPLEMENTATION})"
+  return 0 2>/dev/null || exit 0
+fi
+
 # Clear inherited (possibly broken) discovery configuration.
+unset RMW_IMPLEMENTATION
 unset ROS_DISCOVERY_INTERFACE
 unset ROS_DISCOVERY_PORT
 

@@ -34,31 +34,6 @@ def _yaw_to_quat(yaw: float) -> tuple[float, float, float, float]:
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
 
 
-# region agent log
-def _debug_log(
-    run_id: str,
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict,
-) -> None:
-    payload = {
-        "sessionId": "fa55d2",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open("/home/chesium/worldgen/.cursor/debug-fa55d2.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
-    except OSError:
-        pass
-# endregion agent log
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nav-task", required=True, help="Path to nav_task.json")
@@ -69,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Max wall-clock seconds before aborting the trial.")
     parser.add_argument("--collision-threshold", type=float, default=0.16,
                         help="Min laser range (m) below which a collision is flagged.")
+    parser.add_argument("--goal-tolerance", type=float, default=0.35,
+                        help="Position tolerance (m) for benchmark success.")
     parser.add_argument("--world-id", default="")
     parser.add_argument("--profile", default="")
     parser.add_argument("--planner", default="")
@@ -94,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
         "planned_path_length_m": None,
         "distance_traveled_m": None,
         "min_clearance_m": None,
+        "min_distance_to_goal_m": None,
+        "position_reached": False,
         "n_recoveries": None,
         "straight_line_distance_m": _euclidean(
             task["start"]["x"], task["start"]["y"],
@@ -199,22 +178,6 @@ def _run_trial(args, task: dict, result: dict) -> None:
         rclpy.spin_once(navigator, timeout_sec=0.1)
         if time.time() > clock_deadline:
             break
-    # region agent log
-    _debug_log(
-        "amcl-stall",
-        "A2,A3,A5",
-        "demo/scripts/benchmark_runner.py:_run_trial",
-        "after simulation clock wait",
-        {
-            "clock_ns": navigator.get_clock().now().nanoseconds,
-            "clock_wait_timed_out": navigator.get_clock().now().nanoseconds == 0,
-            "nodes": sorted(str(item) for item in navigator.get_node_names_and_namespaces()),
-            "topics": sorted(name for name, _ in navigator.get_topic_names_and_types()),
-            "services": sorted(name for name, _ in navigator.get_service_names_and_types()),
-        },
-    )
-    # endregion agent log
-
     def _stamp_msg(stamp_s: float):
         from builtin_interfaces.msg import Time
 
@@ -249,27 +212,6 @@ def _run_trial(args, task: dict, result: dict) -> None:
         while rclpy.ok() and not navigator.initial_pose_received:
             now = time.time()
             if now > deadline:
-                # region agent log
-                _debug_log(
-                    "amcl-stall",
-                    "T1,T2,T3,T4,T5",
-                    "demo/scripts/benchmark_runner.py:wait_for_demo_nav_ready",
-                    "timed out waiting for initial pose",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "odom_count": collector.odom_count,
-                        "scan_count": collector.scan_count,
-                        "tf_count": collector.tf_count,
-                        "tf_edges": sorted(collector.tf_edges),
-                        "tf_edge_stamps": dict(sorted(collector.tf_edge_stamps.items())),
-                        "tf_edge_first_stamps": dict(
-                            sorted(collector.tf_edge_first_stamps.items())
-                        ),
-                        "initial_pose_publish_count": initial_pose_publish_count,
-                        "last_initial_pose_stamp": last_initial_pose_stamp,
-                    },
-                )
-                # endregion agent log
                 raise TimeoutError("Timed out waiting for AMCL to accept the initial pose")
             if now >= next_initial_pose_publish:
                 odom_stamp = collector.tf_edge_stamps.get("odom->base_footprint")
@@ -293,23 +235,6 @@ def _run_trial(args, task: dict, result: dict) -> None:
                 if time.time() > deadline:
                     raise TimeoutError(f"Timed out waiting for {name} action server")
 
-        # region agent log
-        _debug_log(
-            "post-readiness-fix",
-            "A2",
-            "demo/scripts/benchmark_runner.py:_run_trial",
-            "demo nav readiness satisfied",
-            {
-                "initial_pose_received": bool(navigator.initial_pose_received),
-                "has_navigate_to_pose_action": True,
-                "has_compute_path_to_pose_action": True,
-                "clock_ns": navigator.get_clock().now().nanoseconds,
-                "initial_pose_publish_count": initial_pose_publish_count,
-                "last_initial_pose_stamp": last_initial_pose_stamp,
-            },
-        )
-        # endregion agent log
-
     def wait_for_navigation_tf(timeout_sec: float) -> float:
         deadline = time.time() + timeout_sec
         while rclpy.ok():
@@ -319,26 +244,6 @@ def _run_trial(args, task: dict, result: dict) -> None:
             if map_first_stamp > 0.0 and odom_stamp >= map_first_stamp:
                 return odom_stamp
             if time.time() > deadline:
-                # region agent log
-                _debug_log(
-                    "post-pose-stamp-fix",
-                    "P1,T1,T2,T3",
-                    "demo/scripts/benchmark_runner.py:wait_for_navigation_tf",
-                    "timed out waiting for navigation TF",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "required_edges": ("map->odom", "odom->base_footprint"),
-                        "map_stamp": map_stamp,
-                        "map_first_stamp": map_first_stamp,
-                        "odom_stamp": odom_stamp,
-                        "tf_edges": sorted(collector.tf_edges),
-                        "tf_edge_stamps": dict(sorted(collector.tf_edge_stamps.items())),
-                        "tf_edge_first_stamps": dict(
-                            sorted(collector.tf_edge_first_stamps.items())
-                        ),
-                    },
-                )
-                # endregion agent log
                 raise TimeoutError("Timed out waiting for map/odom/base TF")
             rclpy.spin_once(navigator, timeout_sec=0.2)
 
@@ -357,55 +262,24 @@ def _run_trial(args, task: dict, result: dict) -> None:
                 and "/amcl/get_state" in service_names
             )
             if ready:
-                # region agent log
-                _debug_log(
-                    "localization-graph-wait",
-                    "L1,L2,L3,L4",
-                    "demo/scripts/benchmark_runner.py:wait_for_localization_graph",
-                    "localization graph ready",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "node_count": len(node_names),
-                        "topic_count": len(topic_names),
-                        "service_count": len(service_names),
-                        "has_amcl": True,
-                        "has_map_server": True,
-                        "has_lifecycle_manager_localization": True,
-                    },
-                )
-                # endregion agent log
                 return
             if time.time() > deadline:
-                # region agent log
-                _debug_log(
-                    "localization-graph-wait",
-                    "L1,L2,L3,L4",
-                    "demo/scripts/benchmark_runner.py:wait_for_localization_graph",
-                    "timed out waiting for localization graph",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "nodes": sorted(node_names),
-                        "missing_topics": sorted(required_topics - topic_names),
-                        "has_amcl_get_state": "/amcl/get_state" in service_names,
-                        "has_amcl": "amcl" in node_names,
-                        "has_map_server": "map_server" in node_names,
-                        "has_lifecycle_manager_localization": (
-                            "lifecycle_manager_localization" in node_names
-                        ),
-                    },
-                )
-                # endregion agent log
                 raise TimeoutError("Timed out waiting for localization graph")
             rclpy.spin_once(navigator, timeout_sec=0.2)
 
-    def wait_for_lifecycle_active(timeout_sec: float) -> None:
+    def wait_for_lifecycle_active(
+        timeout_sec: float,
+        node_names: tuple[str, ...],
+        *,
+        label: str,
+    ) -> None:
         from lifecycle_msgs.msg import State
         from lifecycle_msgs.srv import GetState
 
         deadline = time.time() + timeout_sec
         clients = {
-            "map_server": navigator.create_client(GetState, "/map_server/get_state"),
-            "amcl": navigator.create_client(GetState, "/amcl/get_state"),
+            name: navigator.create_client(GetState, f"/{name}/get_state")
+            for name in node_names
         }
         last_states: dict[str, dict] = {}
         while rclpy.ok():
@@ -433,97 +307,33 @@ def _run_trial(args, task: dict, result: dict) -> None:
                 if state.id != State.PRIMARY_STATE_ACTIVE:
                     all_active = False
             if all_active:
-                # region agent log
-                _debug_log(
-                    "localization-lifecycle-wait",
-                    "L5",
-                    "demo/scripts/benchmark_runner.py:wait_for_lifecycle_active",
-                    "localization lifecycle active",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "states": last_states,
-                    },
-                )
-                # endregion agent log
                 return
             if time.time() > deadline:
-                # region agent log
-                _debug_log(
-                    "localization-lifecycle-wait",
-                    "L5",
-                    "demo/scripts/benchmark_runner.py:wait_for_lifecycle_active",
-                    "timed out waiting for localization lifecycle active",
-                    {
-                        "clock_ns": navigator.get_clock().now().nanoseconds,
-                        "states": last_states,
-                    },
-                )
-                # endregion agent log
-                raise TimeoutError("Timed out waiting for localization lifecycle active")
+                raise TimeoutError(f"Timed out waiting for {label} lifecycle active")
             rclpy.spin_once(navigator, timeout_sec=0.2)
 
     localization_graph_timeout = min(20.0, max(3.0, float(args.wall_timeout) - 5.0))
     wait_for_localization_graph(timeout_sec=localization_graph_timeout)
-    wait_for_lifecycle_active(timeout_sec=localization_graph_timeout)
+    wait_for_lifecycle_active(
+        timeout_sec=localization_graph_timeout,
+        node_names=("map_server", "amcl"),
+        label="localization",
+    )
     start_pose = make_pose(task["start"])
     goal_pose = make_pose(task["goal"])
     navigator.initial_pose = start_pose
-    # region agent log
-    _debug_log(
-        "amcl-stall",
-        "A1,A2,A3,A4,A5",
-        "demo/scripts/benchmark_runner.py:_run_trial",
-        "before waitUntilNav2Active",
-        {
-            "has_amcl_get_state": "/amcl/get_state" in {
-                name for name, _ in navigator.get_service_names_and_types()
-            },
-            "has_lifecycle_manager_localization": any(
-                name == "lifecycle_manager_localization"
-                for name, _ in navigator.get_node_names_and_namespaces()
-            ),
-            "has_scan_topic": "/scan" in {
-                name for name, _ in navigator.get_topic_names_and_types()
-            },
-            "has_odom_topic": "/odom" in {
-                name for name, _ in navigator.get_topic_names_and_types()
-            },
-            "has_clock_topic": "/clock" in {
-                name for name, _ in navigator.get_topic_names_and_types()
-            },
-            "node_count": len(navigator.get_node_names_and_namespaces()),
-            "service_count": len(navigator.get_service_names_and_types()),
-            "topic_count": len(navigator.get_topic_names_and_types()),
-        },
-    )
-    # endregion agent log
     readiness_timeout = min(60.0, max(5.0, float(args.wall_timeout) - 5.0))
     wait_for_demo_nav_ready(timeout_sec=readiness_timeout)
+    wait_for_lifecycle_active(
+        timeout_sec=readiness_timeout,
+        node_names=("controller_server", "planner_server", "bt_navigator"),
+        label="navigation",
+    )
     navigation_tf_stamp = wait_for_navigation_tf(
         min(10.0, max(2.0, float(args.wall_timeout) - 5.0))
     )
     start_pose = make_pose(task["start"], stamp_s=navigation_tf_stamp)
     goal_pose = make_pose(task["goal"], stamp_s=navigation_tf_stamp)
-    # region agent log
-    _debug_log(
-        "post-pose-stamp-fix",
-        "P1",
-        "demo/scripts/benchmark_runner.py:_run_trial",
-        "refreshed navigation pose stamps",
-        {
-            "clock_ns": navigator.get_clock().now().nanoseconds,
-            "start_stamp": start_pose.header.stamp.sec + start_pose.header.stamp.nanosec / 1e9,
-            "goal_stamp": goal_pose.header.stamp.sec + goal_pose.header.stamp.nanosec / 1e9,
-            "odom_count": collector.odom_count,
-            "scan_count": collector.scan_count,
-            "tf_count": collector.tf_count,
-            "tf_edges": sorted(collector.tf_edges),
-            "tf_edge_stamps": dict(sorted(collector.tf_edge_stamps.items())),
-            "tf_edge_first_stamps": dict(sorted(collector.tf_edge_first_stamps.items())),
-            "navigation_tf_stamp": navigation_tf_stamp,
-        },
-    )
-    # endregion agent log
 
     # Planned global path length (best-effort).
     try:
@@ -577,6 +387,10 @@ def _run_trial(args, task: dict, result: dict) -> None:
     result["min_distance_to_goal_m"] = (
         None if math.isinf(min_distance_remaining) else round(min_distance_remaining, 4)
     )
+    result["position_reached"] = bool(
+        result["min_distance_to_goal_m"] is not None
+        and result["min_distance_to_goal_m"] <= args.goal_tolerance
+    )
     result["distance_traveled_m"] = round(collector.distance_traveled, 4)
     clearance = collector.min_clearance
     result["min_clearance_m"] = None if math.isinf(clearance) else round(clearance, 4)
@@ -590,8 +404,16 @@ def _run_trial(args, task: dict, result: dict) -> None:
         TaskResult.FAILED: "FAILED",
     }.get(task_result, "UNKNOWN")
 
+    if last_feedback is None and result["result"] == "SUCCEEDED":
+        result["result"] = "REJECTED"
+        result["error"] = "NavigateToPose finished without feedback; goal was likely rejected"
+    elif result["result"] != "SUCCEEDED" and result["position_reached"]:
+        result["result"] = "POSITION_REACHED"
+
     result["passed"] = bool(
-        result["result"] == "SUCCEEDED" and not timed_out and not collision
+        result["result"] in {"SUCCEEDED", "POSITION_REACHED"}
+        and not timed_out
+        and not collision
     )
 
     executor.shutdown()

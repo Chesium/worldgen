@@ -53,6 +53,7 @@ jobs:
             ros-jazzy-nav2-simple-commander \
             ros-jazzy-ros-gz \
             ros-jazzy-rmw-fastrtps-cpp \
+            ros-jazzy-rmw-cyclonedds-cpp \
             xvfb \
             libgl1-mesa-dri \
             mesa-utils \
