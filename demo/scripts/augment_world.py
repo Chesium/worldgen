@@ -10,16 +10,11 @@ This script injects the same system plugins used by Nav2's stock world
 (``nav2_minimal_tb3_sim/worlds/tb3_sandbox.sdf.xacro``) and switches the physics
 engine to ``ode``.
 
-It also rewrites the generator's "solid" fill regions. The generator exports
-those as ``<polyline>`` geometry, but Gazebo cannot extrude the (non-convex,
-keyhole-shaped) polygons -- it logs ``Unable to extrude mesh`` and drops them.
-The result is a *phantom* obstacle: the Nav2 occupancy map marks the region as
-occupied, but in simulation it has neither collision (the robot drives through
-it) nor visual (the lidar -- which raytraces the rendered *visual* scene -- never
-sees it), so AMCL scan-matching diverges. To make the simulator agree with the
-map we rasterize each polyline polygon and emit axis-aligned ``<box>`` collision
-*and* visual primitives (the same primitive the walls already use, so there are
-no mesh-file/triangulation/winding pitfalls).
+For legacy generator output it can also rewrite "solid" fill regions exported as
+``<polyline>`` geometry. Gazebo cannot extrude the non-convex/keyhole-shaped
+polygons -- it logs ``Unable to extrude mesh`` and drops them. Modern generator
+output exports those solids as boxes or meshes directly, so this conversion path
+is only a compatibility fallback.
 
 It depends only on numpy (available in both the uv venv and a sourced ROS
 environment); the orchestrator imports it inside the venv.
@@ -27,11 +22,13 @@ environment); the orchestrator imports it inside the venv.
 Usage:
     python augment_world.py INPUT.sdf [--output OUTPUT.sdf]
                             [--render-engine ogre2] [--no-scene-broadcaster]
-                            [--solid-resolution 0.1]
+                            [--solid-resolution 0.1] [--no-convert-polylines]
 """
 from __future__ import annotations
 
 import argparse
+import json
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -59,6 +56,33 @@ _SCENE_BROADCASTER = (
 )
 
 
+# region agent log
+def _debug_log(
+    run_id: str,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict,
+) -> None:
+    payload = {
+        "sessionId": "fa55d2",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with Path("/home/chesium/worldgen/.cursor/debug-fa55d2.log").open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except OSError:
+        pass
+# endregion agent log
+
+
 def _make_plugin(
     filename: str, name: str, children: tuple[tuple[str, str], ...]
 ) -> ET.Element:
@@ -73,10 +97,11 @@ def augment_world_sdf(
     input_path: Path,
     output_path: Path,
     *,
-    render_engine: str = "ogre2",
+    render_engine: str = "ogre",
     include_scene_broadcaster: bool = True,
     max_step_size: float = 0.003,
     solid_resolution: float = 0.1,
+    convert_legacy_polylines: bool = True,
 ) -> Path:
     tree = ET.parse(input_path)
     root = tree.getroot()
@@ -84,7 +109,23 @@ def augment_world_sdf(
     if world is None:
         raise ValueError(f"No <world> element found in {input_path}")
 
-    _convert_solid_polylines(world, solid_resolution)
+    # region agent log
+    _debug_log(
+        "post-render-fix",
+        "N5",
+        "demo/scripts/augment_world.py:augment_world_sdf",
+        "augmenting world with render engine",
+        {
+            "input_path": str(input_path),
+            "output_path": str(output_path),
+            "render_engine": render_engine,
+            "convert_legacy_polylines": convert_legacy_polylines,
+        },
+    )
+    # endregion agent log
+
+    if convert_legacy_polylines:
+        _convert_solid_polylines(world, solid_resolution)
 
     plugins: list[ET.Element] = [
         _make_plugin(filename, name, children)
@@ -286,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Output path (default: world_nav.sdf next to the input).",
     )
-    parser.add_argument("--render-engine", default="ogre2")
+    parser.add_argument("--render-engine", default="ogre")
     parser.add_argument(
         "--no-scene-broadcaster",
         action="store_true",
@@ -299,6 +340,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Cell size (m) used to rasterize polyline solids into collision/visual "
              "boxes. Smaller is more faithful but emits more boxes.",
     )
+    parser.add_argument(
+        "--no-convert-polylines",
+        action="store_true",
+        help="Skip legacy solid polyline conversion and only inject sim systems.",
+    )
     args = parser.parse_args(argv)
 
     output = args.output or args.input.with_name("world_nav.sdf")
@@ -308,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         render_engine=args.render_engine,
         include_scene_broadcaster=not args.no_scene_broadcaster,
         solid_resolution=args.solid_resolution,
+        convert_legacy_polylines=not args.no_convert_polylines,
     )
     print(f"Wrote augmented world: {result}")
     return 0

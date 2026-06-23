@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+from shapely.geometry import Polygon
 
 from random_gazebo_world.adjacency import build_adjacency_graph
 from random_gazebo_world.config import Config
@@ -14,16 +15,20 @@ from random_gazebo_world.export_sdf import (
     wall_segment_to_box,
 )
 from random_gazebo_world.geometry import Cell
-from random_gazebo_world.openings import generate_openings
+from random_gazebo_world.openings import OpeningLayout, generate_openings
 from random_gazebo_world.partition import Partition, generate_partition
+from random_gazebo_world.passage_geometry import PassageCellGeometry, PassageGeometryLayout
 from random_gazebo_world.rng import create_seeded_rng
 from random_gazebo_world.topology import (
+    AppliedLayout,
+    CandidateConnections,
     RoomSelection,
+    SelectedRoomGraph,
     apply_connections,
     generate_candidate_connections,
     select_room_graph,
 )
-from random_gazebo_world.walls import WallSegment, generate_walls
+from random_gazebo_world.walls import WallLayout, WallSegment, generate_walls
 
 
 def _sample_config(**overrides: float | int) -> Config:
@@ -69,6 +74,30 @@ def _build_wall_layout(room_ids: set[int], config: Config, seed: int):
     applied = apply_connections(selected, adjacency)
     opening_layout = generate_openings(applied, config, create_seeded_rng(seed + 1000))
     return generate_walls(opening_layout, adjacency, config)
+
+
+def _manual_opening_layout(
+    partition: Partition,
+    *,
+    room_ids: frozenset[int] = frozenset(),
+    passage_ids: frozenset[int] = frozenset(),
+):
+    selection = RoomSelection(partition=partition, room_cell_ids=room_ids)
+    candidates = CandidateConnections(room_selection=selection, connections=())
+    selected = SelectedRoomGraph(
+        candidates=candidates,
+        connections=(),
+        spanning_tree_connections=(),
+        loop_connections=(),
+    )
+    applied = AppliedLayout(
+        partition=partition,
+        room_selection=selection,
+        selected_graph=selected,
+        passage_cell_ids=passage_ids,
+        logical_openings=(),
+    )
+    return OpeningLayout(applied_layout=applied, openings=())
 
 
 def test_wall_segment_to_box_vertical() -> None:
@@ -117,11 +146,130 @@ def test_export_world_sdf_matches_all_wall_segments(tmp_path: Path) -> None:
     )
     link = walls_model.find("link")
     assert link is not None
-    expected = len(wall_layout.segments) + len(wall_layout.unused_solids)
-    if wall_layout.passage_geometry is not None:
-        expected += len(wall_layout.passage_geometry.solids)
-    assert len(link.findall("collision")) == expected
-    assert len(link.findall("visual")) == expected
+    wall_collisions = [
+        item for item in link.findall("collision")
+        if (item.get("name") or "").startswith("wall_")
+    ]
+    wall_visuals = [
+        item for item in link.findall("visual")
+        if (item.get("name") or "").startswith("wall_")
+    ]
+    assert len(wall_collisions) == len(wall_layout.segments)
+    assert len(wall_visuals) == len(wall_layout.segments)
+
+
+def test_hybrid_export_unused_bsp_cell_as_one_solid_box(tmp_path: Path) -> None:
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1}, config, 42)
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    world = ET.parse(sdf_path).getroot().find("world")
+    assert world is not None
+    link = world.find("./model[@name='walls']/link")
+    assert link is not None
+    solid_boxes = [
+        item for item in link.findall("collision")
+        if (item.get("name") or "").startswith("solid_")
+        and item.find("./geometry/box") is not None
+    ]
+    assert len(solid_boxes) == len(wall_layout.unused_solids)
+    sizes = [box.findtext("./geometry/box/size") for box in solid_boxes]
+    assert sizes == ["5.000000 5.000000 2.500000"] * len(wall_layout.unused_solids)
+    assert link.find("collision/geometry/polyline") is None
+
+
+def test_hybrid_export_decomposes_orthogonal_leftover(tmp_path: Path) -> None:
+    config = _sample_config()
+    cell = Cell.from_origin_size(0, 0.0, 0.0, 2.0, 2.0)
+    partition = Partition(cells=(cell,), world_width=2.0, world_height=2.0)
+    opening_layout = _manual_opening_layout(partition, passage_ids=frozenset({0}))
+    leftover = Polygon(
+        [
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 2.0),
+            (0.0, 2.0),
+        ]
+    )
+    passage_geometry = PassageGeometryLayout(
+        opening_layout=opening_layout,
+        cells=(
+            PassageCellGeometry(
+                cell_id=0,
+                corridor=cell.polygon.difference(leftover),
+                solids=(leftover,),
+            ),
+        ),
+    )
+    wall_layout = WallLayout(
+        opening_layout=opening_layout,
+        segments=(),
+        passage_geometry=passage_geometry,
+    )
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    link = ET.parse(sdf_path).getroot().find("./world/model[@name='walls']/link")
+    assert link is not None
+    sizes = sorted(
+        item.findtext("./geometry/box/size")
+        for item in link.findall("collision")
+        if item.find("./geometry/box") is not None
+    )
+    assert sizes == ["1.000000 1.000000 2.500000", "2.000000 1.000000 2.500000"]
+    assert link.find("collision/geometry/mesh") is None
+
+
+def test_hybrid_export_general_polygon_as_mesh(tmp_path: Path) -> None:
+    config = _sample_config()
+    cell = Cell.from_polygon(
+        0,
+        (
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.4, 1.1),
+            (1.0, 2.0),
+            (-0.2, 1.0),
+        ),
+    )
+    partition = Partition(cells=(cell,), world_width=3.0, world_height=3.0)
+    opening_layout = _manual_opening_layout(partition)
+    wall_layout = WallLayout(
+        opening_layout=opening_layout,
+        segments=(),
+        unused_solids=(cell.polygon,),
+    )
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(wall_layout, config, sdf_path)
+
+    link = ET.parse(sdf_path).getroot().find("./world/model[@name='walls']/link")
+    assert link is not None
+    mesh_uri = link.findtext("collision/geometry/mesh/uri")
+    assert mesh_uri is not None
+    assert mesh_uri.startswith("file://")
+    mesh_path = Path(mesh_uri.removeprefix("file://"))
+    assert mesh_path.is_file()
+    assert mesh_path.read_text(encoding="utf-8").startswith("# Generated")
+    assert link.find("collision/geometry/polyline") is None
+
+
+def test_polyline_export_mode_keeps_legacy_solid_polylines(tmp_path: Path) -> None:
+    config = _sample_config()
+    wall_layout = _build_wall_layout({0, 1}, config, 42)
+    sdf_path = tmp_path / "world.sdf"
+    export_world_sdf(
+        wall_layout,
+        config,
+        sdf_path,
+        solid_export_mode="polyline",
+    )
+
+    link = ET.parse(sdf_path).getroot().find("./world/model[@name='walls']/link")
+    assert link is not None
+    assert link.find("collision/geometry/polyline") is not None
 
 
 def test_ground_box_matches_world_dimensions() -> None:

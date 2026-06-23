@@ -54,7 +54,7 @@ def _declare() -> list[DeclareLaunchArgument]:
         "collision_threshold": "0.16",
         "headless": "True",
         "use_rviz": "False",
-        "use_composition": "True",
+        "use_composition": "False",
         "world_id": "",
         "profile": "",
         "planner": "",

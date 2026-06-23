@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from xml.dom import minidom
 
 from shapely.geometry import Polygon
+from shapely.ops import triangulate
 
 from random_gazebo_world.config import Config
+from random_gazebo_world.geometry import EPS, Rect
+from random_gazebo_world.solid_geometry import (
+    SolidShape,
+    collect_tagged_solids,
+    decompose_orthogonal_polygon,
+    rect_from_polygon_bounds,
+)
 from random_gazebo_world.walls import WallLayout, WallSegment
 
 
@@ -80,17 +91,72 @@ class SolidPolyline:
     height: float
 
 
+@dataclass(frozen=True)
+class SolidMesh:
+    name: str
+    uri: str
+
+
+@dataclass(frozen=True)
+class SolidGeometryPlan:
+    boxes: tuple[WallBox, ...]
+    polylines: tuple[SolidPolyline, ...]
+    meshes: tuple[SolidMesh, ...]
+
+
+SolidExportMode = Literal["polyline", "hybrid"]
+
+
+# region agent log
+def _debug_log(
+    run_id: str,
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict,
+) -> None:
+    payload = {
+        "sessionId": "fa55d2",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with Path("/home/chesium/worldgen/.cursor/debug-fa55d2.log").open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except OSError:
+        pass
+# endregion agent log
+
+
 def export_world_sdf(
     wall_layout: WallLayout,
     config: Config,
     output_path: Path,
+    *,
+    solid_export_mode: SolidExportMode = "hybrid",
 ) -> Path:
     boxes = _wall_boxes(wall_layout, config)
-    polylines = _solid_polylines(wall_layout, config)
-    tree = _build_sdf_tree(boxes, polylines, config)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    solid_plan = _plan_solid_geometry(
+        wall_layout,
+        config,
+        output_path=output_path,
+        mode=solid_export_mode,
+    )
+    tree = _build_sdf_tree(boxes, solid_plan, config)
     _write_pretty_xml(tree, output_path)
-    validate_world_sdf(output_path, wall_layout, config)
+    validate_world_sdf(
+        output_path,
+        wall_layout,
+        config,
+        solid_export_mode=solid_export_mode,
+    )
     return output_path
 
 
@@ -134,6 +200,92 @@ def _solid_polylines(wall_layout: WallLayout, config: Config) -> list[SolidPolyl
     return polylines
 
 
+def _plan_solid_geometry(
+    wall_layout: WallLayout,
+    config: Config,
+    *,
+    output_path: Path,
+    mode: SolidExportMode,
+) -> SolidGeometryPlan:
+    if mode == "polyline":
+        return SolidGeometryPlan(
+            boxes=(),
+            polylines=tuple(_solid_polylines(wall_layout, config)),
+            meshes=(),
+        )
+    if mode != "hybrid":
+        raise SdfExportError(f"Unsupported solid export mode: {mode!r}")
+
+    boxes: list[WallBox] = []
+    meshes: list[SolidMesh] = []
+    mesh_dir = output_path.parent / "meshes"
+    tagged_solids = collect_tagged_solids(wall_layout)
+    for solid_index, solid in enumerate(tagged_solids):
+        if solid.shape is SolidShape.AXIS_ALIGNED_RECT:
+            rects = (rect_from_polygon_bounds(solid.polygon),)
+        elif solid.shape is SolidShape.ORTHOGONAL:
+            rects = decompose_orthogonal_polygon(solid.polygon)
+        else:
+            rects = ()
+
+        if rects:
+            for rect_index, rect in enumerate(rects):
+                boxes.append(
+                    _solid_rect_to_box(
+                        rect,
+                        name=f"solid_{solid_index}_rect_{rect_index}",
+                        height=config.wall_height,
+                    )
+                )
+            continue
+
+        mesh_path = mesh_dir / f"solid_{solid_index}.obj"
+        _write_solid_mesh(solid.polygon, mesh_path, height=config.wall_height)
+        meshes.append(SolidMesh(name=f"solid_{solid_index}", uri=_mesh_uri(mesh_path)))
+
+    # region agent log
+    _debug_log(
+        "pre-fix",
+        "H2,H4",
+        "random_gazebo_world/export_sdf.py:_plan_solid_geometry",
+        "planned hybrid solid geometries",
+        {
+            "output_path": str(output_path),
+            "mode": mode,
+            "tagged_solid_count": len(tagged_solids),
+            "box_count": len(boxes),
+            "mesh_count": len(meshes),
+            "solids": [
+                {
+                    "index": index,
+                    "shape": solid.shape.value,
+                    "provenance": solid.provenance.value,
+                    "cell_id": solid.cell_id,
+                    "area": round(float(solid.polygon.area), 9),
+                    "holes": len(solid.polygon.interiors),
+                }
+                for index, solid in enumerate(tagged_solids)
+            ],
+            "mesh_uris": [mesh.uri for mesh in meshes],
+        },
+    )
+    # endregion agent log
+    return SolidGeometryPlan(boxes=tuple(boxes), polylines=(), meshes=tuple(meshes))
+
+
+def _solid_rect_to_box(rect: Rect, *, name: str, height: float) -> WallBox:
+    center_x, center_y = rect.center
+    return WallBox(
+        name=name,
+        center_x=center_x,
+        center_y=center_y,
+        center_z=height / 2.0,
+        size_x=rect.width,
+        size_y=rect.height,
+        size_z=height,
+    )
+
+
 def _polygon_points(polygon: Polygon) -> tuple[tuple[float, float], ...] | None:
     if polygon.is_empty:
         return None
@@ -141,6 +293,105 @@ def _polygon_points(polygon: Polygon) -> tuple[tuple[float, float], ...] | None:
     if len(coords) < 4:
         return None
     return tuple((float(x), float(y)) for x, y in coords[:-1])
+
+
+def _write_solid_mesh(polygon: Polygon, output_path: Path, *, height: float) -> None:
+    triangles = [
+        triangle
+        for triangle in triangulate(polygon)
+        if triangle.area > EPS and polygon.covers(triangle)
+    ]
+    triangle_area = sum(triangle.area for triangle in triangles)
+    if abs(triangle_area - polygon.area) > 1e-6:
+        raise SdfExportError(
+            f"Could not triangulate solid polygon for mesh export: "
+            f"area {triangle_area:.6f} != {polygon.area:.6f}"
+        )
+
+    vertices: list[tuple[float, float, float]] = []
+    normals: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, ...]] = []
+
+    def append_face(points: tuple[tuple[float, float, float], ...]) -> None:
+        normal = _face_normal(points)
+        indices: list[int] = []
+        for x, y, z in points:
+            vertices.append((round(float(x), 9), round(float(y), 9), round(float(z), 9)))
+            normals.append(normal)
+            indices.append(len(vertices))
+        faces.append(tuple(indices))
+
+    for triangle in triangles:
+        coords = list(triangle.exterior.coords)[:3]
+        append_face(tuple((x, y, height) for x, y in coords))
+        append_face(tuple((x, y, 0.0) for x, y in reversed(coords)))
+
+    for ring in [polygon.exterior, *polygon.interiors]:
+        coords = list(ring.coords)
+        for (ax, ay), (bx, by) in zip(coords, coords[1:], strict=False):
+            append_face(
+                (
+                    (ax, ay, 0.0),
+                    (bx, by, 0.0),
+                    (bx, by, height),
+                    (ax, ay, height),
+                )
+            )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # region agent log
+    _debug_log(
+        "pre-fix",
+        "H1,H3,H5",
+        "random_gazebo_world/export_sdf.py:_write_solid_mesh",
+        "writing solid OBJ mesh",
+        {
+            "output_path": str(output_path),
+            "polygon_area": round(float(polygon.area), 9),
+            "triangle_area": round(float(triangle_area), 9),
+            "triangle_count": len(triangles),
+            "vertex_count": len(vertices),
+            "face_count": len(faces),
+            "normal_count": len(normals),
+            "faces_use_normal_indices": True,
+            "tri_face_count": sum(1 for face in faces if len(face) == 3),
+            "quad_face_count": sum(1 for face in faces if len(face) == 4),
+            "has_holes": bool(polygon.interiors),
+            "height": height,
+        },
+    )
+    # endregion agent log
+    lines = ["# Generated by random_gazebo_world\n"]
+    for x, y, z in vertices:
+        lines.append(f"v {x:.9f} {y:.9f} {z:.9f}\n")
+    for nx, ny, nz in normals:
+        lines.append(f"vn {nx:.9f} {ny:.9f} {nz:.9f}\n")
+    for face in faces:
+        lines.append("f " + " ".join(f"{index}//{index}" for index in face) + "\n")
+    output_path.write_text("".join(lines), encoding="utf-8")
+
+
+def _face_normal(
+    points: tuple[tuple[float, float, float], ...],
+) -> tuple[float, float, float]:
+    if len(points) < 3:
+        return (0.0, 0.0, 1.0)
+    ax, ay, az = points[0]
+    bx, by, bz = points[1]
+    cx, cy, cz = points[2]
+    ux, uy, uz = bx - ax, by - ay, bz - az
+    vx, vy, vz = cx - ax, cy - ay, cz - az
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = (nx * nx + ny * ny + nz * nz) ** 0.5
+    if length <= EPS:
+        return (0.0, 0.0, 1.0)
+    return (nx / length, ny / length, nz / length)
+
+
+def _mesh_uri(path: Path) -> str:
+    return f"file://{path.resolve().as_posix()}"
 
 
 def wall_segment_to_box(
@@ -192,6 +443,8 @@ def validate_world_sdf(
     sdf_path: Path,
     wall_layout: WallLayout,
     config: Config,
+    *,
+    solid_export_mode: SolidExportMode = "hybrid",
 ) -> None:
     if not sdf_path.is_file():
         raise SdfExportError(f"SDF file not found: {sdf_path}")
@@ -217,7 +470,6 @@ def validate_world_sdf(
         raise SdfExportError("Wall model must contain a <link> element")
 
     expected_boxes = _wall_boxes(wall_layout, config)
-    expected_polylines = _solid_polylines(wall_layout, config)
 
     box_collisions = [
         item for item in link.findall("collision")
@@ -235,24 +487,44 @@ def validate_world_sdf(
         item for item in link.findall("visual")
         if item.find("./geometry/polyline") is not None
     ]
+    mesh_collisions = [
+        item for item in link.findall("collision")
+        if item.find("./geometry/mesh") is not None
+    ]
+    mesh_visuals = [
+        item for item in link.findall("visual")
+        if item.find("./geometry/mesh") is not None
+    ]
 
-    if len(box_collisions) != len(expected_boxes) or len(box_visuals) != len(
+    wall_box_collisions = [
+        item for item in box_collisions if (item.get("name") or "").startswith("wall_")
+    ]
+    wall_box_visuals = [
+        item for item in box_visuals if (item.get("name") or "").startswith("wall_")
+    ]
+
+    if len(wall_box_collisions) != len(expected_boxes) or len(wall_box_visuals) != len(
         expected_boxes
     ):
         raise SdfExportError(
             f"Expected {len(expected_boxes)} wall box collision/visual pairs, got "
-            f"{len(box_collisions)}/{len(box_visuals)}"
+            f"{len(wall_box_collisions)}/{len(wall_box_visuals)}"
         )
-    if len(polyline_collisions) != len(expected_polylines) or len(
-        polyline_visuals
-    ) != len(expected_polylines):
-        raise SdfExportError(
-            f"Expected {len(expected_polylines)} solid polyline collision/visual pairs, "
-            f"got {len(polyline_collisions)}/{len(polyline_visuals)}"
-        )
+    _validate_solid_geometry_counts(
+        sdf_path,
+        wall_layout,
+        config,
+        solid_export_mode,
+        box_collisions,
+        box_visuals,
+        polyline_collisions,
+        polyline_visuals,
+        mesh_collisions,
+        mesh_visuals,
+    )
 
     for index, expected_box in enumerate(expected_boxes):
-        collision = box_collisions[index]
+        collision = wall_box_collisions[index]
         pose = collision.find("pose")
         size = collision.find("./geometry/box/size")
         if pose is None or size is None:
@@ -276,6 +548,63 @@ def validate_world_sdf(
             raise SdfExportError(f"Wall {index} size mismatch")
 
     _validate_ground_model(world, config)
+
+
+def _validate_solid_geometry_counts(
+    sdf_path: Path,
+    wall_layout: WallLayout,
+    config: Config,
+    solid_export_mode: SolidExportMode,
+    box_collisions: list[ET.Element],
+    box_visuals: list[ET.Element],
+    polyline_collisions: list[ET.Element],
+    polyline_visuals: list[ET.Element],
+    mesh_collisions: list[ET.Element],
+    mesh_visuals: list[ET.Element],
+) -> None:
+    if solid_export_mode == "polyline":
+        expected_polylines = _solid_polylines(wall_layout, config)
+        if len(polyline_collisions) != len(expected_polylines) or len(
+            polyline_visuals
+        ) != len(expected_polylines):
+            raise SdfExportError(
+                f"Expected {len(expected_polylines)} solid polyline pairs, got "
+                f"{len(polyline_collisions)}/{len(polyline_visuals)}"
+            )
+        return
+
+    solid_box_collisions = [
+        item for item in box_collisions if (item.get("name") or "").startswith("solid_")
+    ]
+    solid_box_visuals = [
+        item for item in box_visuals if (item.get("name") or "").startswith("solid_")
+    ]
+    if len(solid_box_collisions) != len(solid_box_visuals):
+        raise SdfExportError(
+            f"Solid box collision/visual mismatch: "
+            f"{len(solid_box_collisions)}/{len(solid_box_visuals)}"
+        )
+    if len(mesh_collisions) != len(mesh_visuals):
+        raise SdfExportError(
+            f"Solid mesh collision/visual mismatch: {len(mesh_collisions)}/{len(mesh_visuals)}"
+        )
+    if polyline_collisions or polyline_visuals:
+        raise SdfExportError("Hybrid SDF export must not contain solid polylines")
+
+    expected_solids = collect_tagged_solids(wall_layout)
+    if len(solid_box_collisions) + len(mesh_collisions) < len(expected_solids):
+        raise SdfExportError(
+            f"Expected at least {len(expected_solids)} solid geometries, got "
+            f"{len(solid_box_collisions) + len(mesh_collisions)}"
+        )
+
+    for mesh in mesh_collisions + mesh_visuals:
+        uri = mesh.findtext("./geometry/mesh/uri")
+        if uri is None or not uri.startswith("file://"):
+            raise SdfExportError(f"Solid mesh has invalid URI: {uri!r}")
+        mesh_path = Path(uri.removeprefix("file://"))
+        if not mesh_path.is_file():
+            raise SdfExportError(f"Solid mesh file not found: {mesh_path}")
 
 
 def _validate_ground_model(world: ET.Element, config: Config) -> None:
@@ -315,7 +644,7 @@ def _validate_ground_model(world: ET.Element, config: Config) -> None:
 
 def _build_sdf_tree(
     boxes: list[WallBox],
-    polylines: list[SolidPolyline],
+    solids: SolidGeometryPlan,
     config: Config,
 ) -> ET.ElementTree:
     sdf = ET.Element("sdf", version="1.10")
@@ -330,9 +659,17 @@ def _build_sdf_tree(
         _append_box(link, f"{box.name}_collision", box, kind="collision")
         _append_box(link, f"{box.name}_visual", box, kind="visual")
 
-    for polyline in polylines:
+    for box in solids.boxes:
+        _append_box(link, f"{box.name}_collision", box, kind="collision")
+        _append_box(link, f"{box.name}_visual", box, kind="visual")
+
+    for polyline in solids.polylines:
         _append_polyline(link, f"{polyline.name}_collision", polyline, kind="collision")
         _append_polyline(link, f"{polyline.name}_visual", polyline, kind="visual")
+
+    for mesh in solids.meshes:
+        _append_mesh(link, f"{mesh.name}_collision", mesh, kind="collision")
+        _append_mesh(link, f"{mesh.name}_visual", mesh, kind="visual")
 
     _append_directional_light(world, SUN_LIGHT)
     _append_directional_light(world, FILL_LIGHT)
@@ -357,6 +694,42 @@ def _append_polyline(
         point.text = f"{x:.6f} {y:.6f}"
     height = ET.SubElement(poly, "height")
     height.text = f"{polyline.height:.6f}"
+
+    if kind == "visual":
+        _append_visual_material(element)
+
+
+def _append_mesh(
+    link: ET.Element,
+    name: str,
+    mesh: SolidMesh,
+    *,
+    kind: str,
+) -> None:
+    element = ET.SubElement(link, kind, name=name)
+    pose = ET.SubElement(element, "pose")
+    pose.text = "0 0 0 0 0 0"
+
+    geometry = ET.SubElement(element, "geometry")
+    mesh_geometry = ET.SubElement(geometry, "mesh")
+    uri = ET.SubElement(mesh_geometry, "uri")
+    uri.text = mesh.uri
+
+    # region agent log
+    _debug_log(
+        "post-normal-fix",
+        "N1,N2,N3,N4",
+        "random_gazebo_world/export_sdf.py:_append_mesh",
+        "appending SDF mesh geometry",
+        {
+            "name": name,
+            "kind": kind,
+            "uri": mesh.uri,
+            "uri_suffix": Path(mesh.uri.removeprefix("file://")).suffix,
+            "mesh_path_exists": Path(mesh.uri.removeprefix("file://")).is_file(),
+        },
+    )
+    # endregion agent log
 
     if kind == "visual":
         _append_visual_material(element)
