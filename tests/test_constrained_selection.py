@@ -135,3 +135,31 @@ def test_inner_retry_recovers_from_selection_dead_end(monkeypatch) -> None:
 
     assert calls["count"] >= 2
     validate_passage_constraints(world.applied_layout, config)
+
+
+def test_debug_retries_emits_periodic_summary(monkeypatch, capsys) -> None:
+    config = load_config(Path("configs/default.yaml"))
+    real_select = pipeline.select_room_graph
+    calls = {"count": 0}
+
+    def flaky_select(candidates, adjacency, cfg, rng):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RoomGraphSelectionError("forced dead end on first selection")
+        return real_select(candidates, adjacency, cfg, rng)
+
+    monkeypatch.setattr(pipeline, "select_room_graph", flaky_select)
+    world = pipeline.generate_valid_world(
+        config,
+        debug_retries=True,
+        debug_retry_summary_interval=1,
+    )
+
+    stderr = capsys.readouterr().err
+    assert calls["count"] >= 2
+    assert world.attempt >= 0
+    assert "[debug-retries] retry summary;" in stderr
+    assert "stages=[selection:1]" in stderr
+    assert "selected_rooms=" in stderr
+    assert "candidates=" in stderr
+    assert "last_error=RoomGraphSelectionError: forced dead end on first selection" in stderr

@@ -77,6 +77,19 @@ def test_passage_constraint_fields_default_when_omitted(tmp_path: Path) -> None:
     assert config.max_attempts == 100000
     assert config.max_selection_attempts == 64
     assert config.ground_thickness == 0.1
+    assert config.passage_geometry_mode == "curved"
+
+
+def test_legacy_orthogonal_with_voronoi_raises(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        [
+            "partition_method: voronoi",
+            "passage_geometry_mode: legacy_orthogonal",
+        ],
+    )
+    with pytest.raises(ConfigError, match="legacy_orthogonal"):
+        load_config(config_path)
 
 
 def test_max_selection_attempts_below_one_raises(tmp_path: Path) -> None:

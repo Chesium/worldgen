@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from random_gazebo_world.config import Config
+from random_gazebo_world.config import Config, ConfigError
 from random_gazebo_world.geometry import Cell, SharedWall
 from random_gazebo_world.openings import Opening, OpeningLayout
 from random_gazebo_world.partition import Partition
@@ -21,7 +21,7 @@ PASSAGE_ID = 0
 CELL = Cell.from_origin_size(PASSAGE_ID, 0.0, 0.0, 4.0, 4.0)
 
 
-def _sample_config(**overrides: float | int) -> Config:
+def _sample_config(**overrides: float | int | str) -> Config:
     values = {
         "world_width": 20.0,
         "world_height": 20.0,
@@ -205,3 +205,93 @@ def test_single_opening_passage_raises() -> None:
 
     with pytest.raises(PassageGeometryError):
         generate_passage_geometry(layout, config)
+
+
+def test_legacy_straight_corridor_aligned_openings() -> None:
+    config = _sample_config(
+        passage_geometry_mode="legacy_orthogonal",
+        partition_method="bsp",
+    )
+    layout = _passage_layout(
+        [
+            _opening("x_min", 2.0, 1.0, 1),
+            _opening("x_max", 2.0, 1.0, 2),
+        ]
+    )
+    geometry = generate_passage_geometry(layout, config)
+
+    cell_geometry = geometry.cells[0]
+    assert cell_geometry.corridor.geom_type == "Polygon"
+    assert _corridor_area(geometry) == pytest.approx(4.0, abs=1e-3)
+    _assert_tiles_cell(geometry)
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 2.0))
+
+
+def test_legacy_corridor_width_uses_min_of_pair() -> None:
+    config = _sample_config(
+        passage_geometry_mode="legacy_orthogonal",
+        partition_method="bsp",
+    )
+    layout = _passage_layout(
+        [
+            _opening("x_min", 2.0, 1.0, 1),
+            _opening("x_max", 2.0, 0.6, 2),
+        ]
+    )
+    geometry = generate_passage_geometry(layout, config)
+
+    cell_geometry = geometry.cells[0]
+    _assert_tiles_cell(geometry)
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 2.0))
+    assert _corridor_area(geometry) == pytest.approx(4.0 * 0.6, abs=1e-3)
+
+
+def test_legacy_l_shaped_corridor_adjacent_edges() -> None:
+    config = _sample_config(
+        passage_geometry_mode="legacy_orthogonal",
+        partition_method="bsp",
+    )
+    layout = _passage_layout(
+        [
+            _opening("x_min", 2.0, 1.0, 1),
+            _opening("y_min", 2.0, 1.0, 2),
+        ]
+    )
+    geometry = generate_passage_geometry(layout, config)
+
+    _assert_tiles_cell(geometry)
+    cell_geometry = geometry.cells[0]
+    assert not cell_geometry.corridor.is_empty
+    assert cell_geometry.solids
+    assert _corridor_reaches(cell_geometry, (0.0, 2.0))
+    assert _corridor_reaches(cell_geometry, (2.0, 0.0))
+
+
+def test_legacy_z_shaped_corridor_offset_openings() -> None:
+    config = _sample_config(
+        passage_geometry_mode="legacy_orthogonal",
+        partition_method="bsp",
+    )
+    layout = _passage_layout(
+        [
+            _opening("x_min", 1.0, 1.0, 1),
+            _opening("x_max", 3.0, 1.0, 2),
+        ]
+    )
+    geometry = generate_passage_geometry(layout, config)
+
+    _assert_tiles_cell(geometry)
+    cell_geometry = geometry.cells[0]
+    assert not cell_geometry.corridor.is_empty
+    assert _corridor_reaches(cell_geometry, (0.0, 1.0))
+    assert _corridor_reaches(cell_geometry, (4.0, 3.0))
+
+
+def test_legacy_orthogonal_rejects_voronoi_partition() -> None:
+    with pytest.raises(ConfigError, match="legacy_orthogonal"):
+        _sample_config(
+            passage_geometry_mode="legacy_orthogonal",
+            partition_method="voronoi",
+        )

@@ -38,6 +38,7 @@ class Config:
     voronoi_lloyd_iterations: int = 8
     voronoi_min_cell_area: float = 1.0
     voronoi_max_cell_area: float = 64.0
+    passage_geometry_mode: str = "curved"
 
     def validate(self) -> None:
         _require_positive(self.world_width, "world_width")
@@ -96,6 +97,20 @@ class Config:
             self.max_selection_attempts, "max_selection_attempts"
         )
         _require_positive(self.ground_thickness, "ground_thickness")
+        if self.passage_geometry_mode not in ("curved", "legacy_orthogonal"):
+            raise ConfigError(
+                "passage_geometry_mode must be 'curved' or 'legacy_orthogonal', got "
+                f"{self.passage_geometry_mode!r}"
+            )
+        if (
+            self.passage_geometry_mode == "legacy_orthogonal"
+            and self.partition_method != "bsp"
+        ):
+            raise ConfigError(
+                "passage_geometry_mode 'legacy_orthogonal' requires "
+                "partition_method 'bsp', got "
+                f"{self.partition_method!r}"
+            )
 
     def with_seed(self, seed: int) -> Config:
         return replace(self, random_seed=seed)
@@ -141,6 +156,7 @@ def load_config(path: Path | str) -> Config:
             voronoi_lloyd_iterations=raw.get("voronoi_lloyd_iterations", 8),
             voronoi_min_cell_area=raw.get("voronoi_min_cell_area", 1.0),
             voronoi_max_cell_area=raw.get("voronoi_max_cell_area", 64.0),
+            passage_geometry_mode=raw.get("passage_geometry_mode", "curved"),
         )
     except KeyError as exc:
         raise ConfigError(f"Missing required config field: {exc.args[0]}") from exc

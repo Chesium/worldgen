@@ -33,11 +33,31 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Output directory for generated world artifacts.",
     )
+    generate.add_argument(
+        "--debug-retries",
+        action="store_true",
+        help="Print periodic retry diagnostics to stderr.",
+    )
+    generate.add_argument(
+        "--debug-retries-summary-interval",
+        type=int,
+        default=25,
+        help="How often to print retry diagnostics (in rejected attempts).",
+    )
     return parser
 
 
-def generate_world(config, out_dir: Path) -> None:
-    world = generate_valid_world(config)
+def generate_world(
+    config,
+    out_dir: Path,
+    debug_retries: bool = False,
+    debug_retries_summary_interval: int = 25,
+) -> None:
+    world = generate_valid_world(
+        config,
+        debug_retries=debug_retries,
+        debug_retry_summary_interval=debug_retries_summary_interval,
+    )
     write_world_outputs(world, out_dir)
 
 
@@ -49,7 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         if args.seed is not None:
             config = config.with_seed(args.seed)
-        generate_world(config, args.out)
+        generate_world(
+            config,
+            args.out,
+            debug_retries=args.debug_retries,
+            debug_retries_summary_interval=args.debug_retries_summary_interval,
+        )
         return 0
 
     parser.error(f"Unknown command: {args.command}")
