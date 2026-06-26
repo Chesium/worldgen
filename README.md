@@ -198,7 +198,7 @@ gz sim outputs/world_42/world_nav.sdf
 ## Generator Pipeline
 
 1. **Partition**: split the world into cells. The default config currently uses
-   Voronoi cells; BSP support is still present.
+   BSP; Voronoi support remains available via configuration.
 2. **Adjacency graph**: build edges where cells share boundaries.
 3. **Room selection**: mark selected cells as rooms.
 4. **Candidate connections**: create gate candidates for adjacent rooms and
